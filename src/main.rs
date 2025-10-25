@@ -1,6 +1,9 @@
+mod block_indexer;
 mod click;
 mod common;
+mod rpc;
 mod transfers;
+mod types;
 
 use crate::click::*;
 use std::sync::Arc;
@@ -28,7 +31,7 @@ async fn main() {
             signal_hook::consts::SIGTERM,
             signal_hook::consts::SIGINT,
         ])
-            .unwrap();
+        .unwrap();
         for sig in signals.forever() {
             match sig {
                 signal_hook::consts::SIGTERM | signal_hook::consts::SIGINT => {
@@ -123,7 +126,6 @@ async fn main() {
 
     tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
 }
-
 
 async fn listen_blocks_for_transactions(
     mut stream: mpsc::Receiver<BlockWithTxHashes>,
