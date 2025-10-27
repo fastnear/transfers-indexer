@@ -43,13 +43,11 @@ CREATE TABLE transfers
     receiver_start_of_block_balance Nullable(UInt128) COMMENT 'The receiver account balance at the start of the block in token units',
     receiver_end_of_block_balance   Nullable(UInt128) COMMENT 'The receiver account balance at the end of the block in token units',
 
-    INDEX block_height_minmax_idx block_height TYPE minmax GRANULARITY 1
---     INDEX                       account_id_bloom_index account_id TYPE bloom_filter() GRANULARITY 1,
---     INDEX                       event_set_index event TYPE set(0) GRANULARITY 1,
---     INDEX                       data_account_id_bloom_index data_account_id TYPE bloom_filter() GRANULARITY 1,
---     INDEX                       data_owner_id_bloom_index data_owner_id TYPE bloom_filter() GRANULARITY 1,
---     INDEX                       data_old_owner_id_bloom_index data_old_owner_id TYPE bloom_filter() GRANULARITY 1,
---     INDEX                       data_new_owner_id_bloom_index data_new_owner_id TYPE bloom_filter() GRANULARITY 1,
+    INDEX block_height_minmax_idx block_height TYPE minmax GRANULARITY 1,
+    INDEX account_id_bloom_index account_id TYPE bloom_filter() GRANULARITY 1,
+    INDEX asset_id_bloom_index asset_id TYPE bloom_filter() GRANULARITY 1,
+    INDEX sender_id_bloom_index sender_id TYPE bloom_filter() GRANULARITY 1,
+    INDEX receiver_id_bloom_index receiver_id TYPE bloom_filter() GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
       PRIMARY KEY (block_timestamp)
       ORDER BY (block_timestamp, transfer_index);
