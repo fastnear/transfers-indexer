@@ -510,6 +510,11 @@ impl BlockIndexer {
             .map(|(k, _v)| k)
             .collect::<Vec<_>>();
         let task_results = rpc::fetch_from_rpc(&tasks, rpc_config).await?;
+        assert_eq!(
+            task_results.len(),
+            tasks.len(),
+            "Invalid number of tasks returned"
+        );
 
         let rows = self
             .pending_rows
