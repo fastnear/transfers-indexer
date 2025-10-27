@@ -34,6 +34,7 @@ CREATE TABLE transfers
     receiver_id                     Nullable(String) COMMENT 'The account ID of the receiver, or empty for burns',
     asset_id                        String COMMENT 'The asset ID (e.g., "near" for NEAR transfers, or the token contract account ID for fungible token transfers)',
     asset_type                      LowCardinality(String) COMMENT 'The asset type: "Near" for native token transfers, "Ft" for fungible token transfers',
+    amount                          UInt128 COMMENT 'The amount transferred in token units (e.g. yoctoNEAR)',
     method_name                     Nullable(String) COMMENT 'The method name that triggered the transfer (e.g., "ft_transfer", "ft_transfer_call", etc.)',
     transfer_type                   LowCardinality(String) COMMENT 'The type of transfer: NEAR native token or Fungible Token (FT)',
     human_amount                    Nullable(Float64) COMMENT 'The amount transferred after applying the token decimals, if available',

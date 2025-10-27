@@ -510,6 +510,11 @@ impl BlockIndexer {
             .map(|(k, _v)| k)
             .collect::<Vec<_>>();
         let task_results = rpc::fetch_from_rpc(&tasks, rpc_config).await?;
+        assert_eq!(
+            task_results.len(),
+            tasks.len(),
+            "Invalid number of tasks returned"
+        );
 
         let rows = self
             .pending_rows
@@ -525,13 +530,17 @@ impl BlockIndexer {
                             receiver_end_of_block_balance,
                         } => {
                             row.sender_start_of_block_balance =
-                                resolve_task(&task_results, sender_start_of_block_balance);
+                                resolve_task(&task_results, sender_start_of_block_balance)
+                                    .map(|v| v.0);
                             row.sender_end_of_block_balance =
-                                resolve_task(&task_results, sender_end_of_block_balance);
+                                resolve_task(&task_results, sender_end_of_block_balance)
+                                    .map(|v| v.0);
                             row.receiver_start_of_block_balance =
-                                resolve_task(&task_results, receiver_start_of_block_balance);
+                                resolve_task(&task_results, receiver_start_of_block_balance)
+                                    .map(|v| v.0);
                             row.receiver_end_of_block_balance =
-                                resolve_task(&task_results, receiver_end_of_block_balance);
+                                resolve_task(&task_results, receiver_end_of_block_balance)
+                                    .map(|v| v.0);
                         }
                         TaskGroup::FtDecimals { decimals } => {
                             if let Some(decimals) = resolve_task(&task_results, Some(decimals)) {
