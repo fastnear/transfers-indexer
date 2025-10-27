@@ -359,7 +359,7 @@ fn parse_ft_balance(result: Value) -> Result<TaskResult, RpcError> {
     }
     Ok(fc.result.and_then(|result| {
         let balance: Option<U128> = serde_json::from_slice(&result).ok();
-        balance.map(|b| serde_json::to_value(b.0).unwrap())
+        balance.map(|b| serde_json::to_value(b).unwrap())
     }))
 }
 
