@@ -16,10 +16,13 @@ const NEAR_BASE_FACTOR: f64 = 1e24;
 const NATIVE_NEAR_ASSET_ID: &str = "native:near";
 const WRAPPED_NEAR_MAINNET: &str = "wrap.near";
 const WRAPPED_NEAR_TESTNET: &str = "wrap.testnet";
+
 const EVENT_STANDARD_FT: &str = "nep141";
 const EVENT_FT_TRANSFER: &str = "ft_transfer";
 const EVENT_FT_MINT: &str = "ft_mint";
 const EVENT_FT_BURN: &str = "ft_burn";
+
+const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
 
 pub struct BlockIndexer {
     pub task_cache: TaskCache,
@@ -220,7 +223,12 @@ impl BlockIndexer {
                             let mut transfer_index = global_transfer_index * TRANSFER_MULTIPLIER;
                             global_transfer_index += 1;
 
-                            let event: JsonEvent = match serde_json::from_str(&log) {
+                            if !log.starts_with(EVENT_JSON_PREFIX) {
+                                continue;
+                            }
+
+                            let event_json = &log[EVENT_JSON_PREFIX.len()..];
+                            let event: JsonEvent = match serde_json::from_str(&event_json) {
                                 Ok(event) => event,
                                 Err(_) => continue,
                             };
