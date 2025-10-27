@@ -1,4 +1,5 @@
 use clickhouse::Row;
+use derivative::Derivative;
 use fastnear_primitives::near_indexer_primitives::types::AccountId;
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use fastnear_primitives::near_primitives::serialize::dec_format;
@@ -13,8 +14,6 @@ pub enum TransferType {
     NativeTransfer,
     AttachedDeposit,
     FtTransfer,
-    FtTransferCall,
-    FtResolveTransfer,
     WrappedNear,
 }
 
@@ -43,8 +42,6 @@ impl TransferType {
             TransferType::NativeTransfer => TRANSFER_MULTIPLIER - 1,
             TransferType::AttachedDeposit => TRANSFER_MULTIPLIER - 2,
             TransferType::FtTransfer => 0,
-            TransferType::FtTransferCall => 0,
-            TransferType::FtResolveTransfer => 0,
             TransferType::WrappedNear => 0,
         }
     }
@@ -56,7 +53,8 @@ pub struct TransferRow {
     pub block_timestamp: u64,
     pub transaction_id: Option<String>,
     pub receipt_id: String,
-    pub action_index: u16,
+    pub action_index: Option<u16>,
+    pub log_index: Option<u16>,
     pub transfer_index: u32,
     pub signer_id: String,
     pub predecessor_id: String,
@@ -76,7 +74,8 @@ pub struct TransferRow {
     pub receiver_end_of_block_balance: Option<u128>,
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Derivative)]
+#[derivative(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum Task {
     AccountBalance {
         account_id: AccountId,
@@ -89,6 +88,8 @@ pub enum Task {
     },
     FtDecimals {
         contract_id: AccountId,
+        #[derivative(PartialEq = "ignore")]
+        #[derivative(Hash = "ignore")]
         block_hash: CryptoHash,
     },
 }
@@ -146,6 +147,38 @@ pub struct WNearWithdrawArgs {
 pub struct FtResolveTransferArgs {
     pub sender_id: AccountId,
     pub receiver_id: AccountId,
+    #[serde(with = "dec_format")]
+    pub amount: u128,
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct FtTransfer {
+    pub contract_id: AccountId,
+    pub sender_id: Option<AccountId>,
+    pub receiver_id: Option<AccountId>,
+    pub amount: u128,
+}
+
+#[allow(unused)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonEvent {
+    pub version: String,
+    pub standard: String,
+    pub event: String,
+    pub data: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonEventFtTransfer {
+    pub old_owner_id: AccountId,
+    pub new_owner_id: AccountId,
+    #[serde(with = "dec_format")]
+    pub amount: u128,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonEventFtMintOrBurn {
+    pub owner_id: AccountId,
     #[serde(with = "dec_format")]
     pub amount: u128,
 }
