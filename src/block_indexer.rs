@@ -219,6 +219,25 @@ impl BlockIndexer {
                             prev == 0
                         };
 
+                        // Optimistically find the method_name for logs
+                        let mut method_name = None;
+                        for action in &actions {
+                            match action {
+                                ActionView::FunctionCall {
+                                    method_name: new_method_name,
+                                    ..
+                                } => {
+                                    let new_method_name = Some(new_method_name.clone());
+                                    if method_name.is_some() && new_method_name != method_name {
+                                        method_name = None;
+                                        break;
+                                    }
+                                    method_name = new_method_name;
+                                }
+                                _ => {}
+                            }
+                        }
+
                         for (log_index, log) in logs.into_iter().enumerate() {
                             let mut transfer_index = global_transfer_index * TRANSFER_MULTIPLIER;
                             global_transfer_index += 1;
@@ -249,7 +268,7 @@ impl BlockIndexer {
                                 asset_id: "".to_string(),
                                 asset_type: "".to_string(),
                                 amount: 0,
-                                method_name: None,
+                                method_name: method_name.clone(),
                                 transfer_type: "".to_string(),
                                 human_amount: None,
                                 usd_amount: None,
