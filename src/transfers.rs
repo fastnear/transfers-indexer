@@ -10,13 +10,13 @@ pub struct TransfersIndexer {
     pub commit_every_block: bool,
     pub rows: Vec<TransferRow>,
     pub commit_handlers: Vec<tokio::task::JoinHandle<Result<(), clickhouse::error::Error>>>,
-    pub transfer_types: HashSet<TransferType>,
+    pub transfer_types: Option<HashSet<TransferType>>,
     pub task_cache: Option<TaskCache>,
     pub rpc_config: RpcConfig,
 }
 
 impl TransfersIndexer {
-    pub fn new(transfer_types: &[TransferType]) -> Self {
+    pub fn new(transfer_types: Option<&[TransferType]>) -> Self {
         let commit_every_block = std::env::var("COMMIT_EVERY_BLOCK")
             .map(|v| v == "true")
             .unwrap_or(false);
@@ -25,7 +25,7 @@ impl TransfersIndexer {
             commit_every_block,
             rows: vec![],
             commit_handlers: vec![],
-            transfer_types: transfer_types.iter().copied().collect(),
+            transfer_types: transfer_types.map(|types| types.iter().copied().collect()),
             task_cache: None,
             rpc_config,
         }
@@ -77,15 +77,12 @@ impl TransfersIndexer {
 
     pub async fn process_block(
         &mut self,
-        db: &mut ClickDB,
+        db: &ClickDB,
         mut block: BlockWithTxHashes,
     ) -> anyhow::Result<()> {
         block.shards.sort_by(|a, b| a.shard_id.cmp(&b.shard_id));
 
         let block_height = block.block.header.height;
-        let block_hash = block.block.header.hash;
-        let previous_block_hash = block.block.header.prev_hash;
-        let block_timestamp = block.block.header.timestamp_nanosec;
 
         let mut block_indexer = BlockIndexer::new(self.task_cache.take());
         block_indexer.process_block(block, &self.transfer_types)?;
@@ -104,7 +101,7 @@ impl TransfersIndexer {
         Ok(())
     }
 
-    pub async fn last_block_height(&mut self, db: &ClickDB) -> BlockHeight {
+    pub async fn last_block_height(&self, db: &ClickDB) -> BlockHeight {
         db.max("block_height", "transfers").await.unwrap_or(0)
     }
 

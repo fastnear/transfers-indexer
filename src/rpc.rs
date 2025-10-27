@@ -2,12 +2,10 @@ use crate::types::*;
 use base64::prelude::*;
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use fastnear_primitives::near_primitives::serialize::dec_format;
-use fastnear_primitives::near_primitives::types::BlockHeight;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
-use std::fmt::format;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task;
@@ -17,6 +15,7 @@ const TARGET_RPC: &str = "rpc";
 const RPC_ERROR_UNKNOWN_BLOCK: &str = "UNKNOWN_BLOCK";
 const RPC_ERROR_UNAVAILABLE_SHARD: &str = "UNAVAILABLE_SHARD";
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum RpcError {
     ReqwestError(reqwest::Error),
@@ -61,6 +60,7 @@ struct JsonRpcErrorCause {
     name: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct JsonRpcError {
     cause: Option<JsonRpcErrorCause>,
@@ -82,7 +82,7 @@ struct AccountStateResponse {
     amount: u128,
     #[serde(with = "dec_format")]
     locked: u128,
-    storage_usage: u64,
+    // storage_usage: u64,
     // error: Option<String>,
 }
 
@@ -98,11 +98,6 @@ pub struct RpcConfig {
     pub bearer_token: Option<String>,
     pub timeout: Duration,
     pub num_iterations: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct RpcFtPairResult {
-    pub balance: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +153,7 @@ pub async fn fetch_from_rpc(
     let (tx, mut rx) =
         mpsc::channel::<Result<(TaskId, TaskResult), RpcError>>(rpc_config.concurrency);
     let rpcs = &rpc_config.rpcs;
+    tracing::info!(target: TARGET_RPC, "Fetching {} tasks from RPC", tasks.len());
 
     for (i, task) in tasks.iter().enumerate() {
         let task_id = TaskId(i);

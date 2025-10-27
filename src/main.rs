@@ -8,19 +8,20 @@ mod types;
 use crate::click::*;
 use std::sync::Arc;
 
+use crate::types::TransferType;
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
 use fastnear_primitives::block_with_tx_hash::*;
+use fastnear_primitives::near_indexer_primitives::types::BlockHeight;
 use fastnear_primitives::types::ChainId;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 const PROJECT_ID: &str = "transfer-indexer";
 
-const SAFE_CATCH_UP_OFFSET: u64 = 1000;
-
 #[tokio::main]
 async fn main() {
+    #[allow(deprecated)]
     openssl_probe::init_ssl_cert_env_vars();
     dotenv().ok();
 
@@ -44,7 +45,7 @@ async fn main() {
         }
     });
 
-    common::setup_tracing("clickhouse=info,transfer-indexer=info,neardata-fetcher=info");
+    common::setup_tracing("clickhouse=info,transfer-indexer=info,neardata-fetcher=info,rpc=info");
 
     tracing::log::info!(target: PROJECT_ID, "Starting Transfer Indexer");
 
@@ -72,79 +73,63 @@ async fn main() {
     tracing::log::info!(target: PROJECT_ID, "First block: {}", first_block_height);
 
     let args: Vec<String> = std::env::args().collect();
-    let backfill_block_height = args
+    let transfer_types_str = args.get(1).expect("Command is not specified");
+    let transfer_types = if transfer_types_str.to_lowercase() == "all" {
+        None
+    } else {
+        Some(
+            transfer_types_str
+                .split(',')
+                .map(|s| {
+                    serde_json::from_str::<TransferType>(&format!("\"{s}\""))
+                        .map_err(|err| format!("Invalid transfer type `{s}`: {:?}", err))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let start_block_height: Option<BlockHeight> = args
         .get(2)
         .map(|v| v.parse().expect("Failed to parse backfill block height"));
 
-    match command {
-        "actions" => {
-            let mut actions_data = ActionsData::new();
-            let db_last_block_height = actions_data.last_block_height(&db).await;
-            let last_block_height = backfill_block_height.unwrap_or(db_last_block_height);
-            let start_block_height = first_block_height.max(last_block_height + 1);
-            let (sender, receiver) = mpsc::channel(100);
-            let mut builder = fetcher::FetcherConfigBuilder::new()
-                .chain_id(chain_id)
-                .num_threads(num_threads)
-                .start_block_height(start_block_height);
-            if let Some(auth_bearer_token) = auth_bearer_token {
-                builder = builder.auth_bearer_token(auth_bearer_token);
-            }
-            tokio::spawn(fetcher::start_fetcher(builder.build(), sender, is_running));
-            listen_blocks_for_actions(receiver, db, actions_data, last_block_height).await;
+    let end_block_height: Option<BlockHeight> = args
+        .get(3)
+        .map(|v| v.parse().expect("Failed to parse end block height"));
+
+    let mut transfers_indexer = transfers::TransfersIndexer::new(transfer_types.as_deref());
+    let db_last_block_height = transfers_indexer.last_block_height(&db).await;
+    let start_block_height = start_block_height
+        .unwrap_or(db_last_block_height + 1)
+        .max(first_block_height);
+
+    let (sender, mut receiver) = mpsc::channel(100);
+    let mut builder = fetcher::FetcherConfigBuilder::new()
+        .chain_id(chain_id)
+        .num_threads(num_threads)
+        .start_block_height(start_block_height);
+    if let Some(end_block_height) = end_block_height {
+        builder = builder.end_block_height(end_block_height);
+    }
+    if let Some(auth_bearer_token) = auth_bearer_token {
+        builder = builder.auth_bearer_token(auth_bearer_token);
+    }
+    tokio::spawn(fetcher::start_fetcher(
+        builder.build(),
+        sender,
+        is_running.clone(),
+    ));
+
+    while let Some(block) = receiver.recv().await {
+        if is_running.load(Ordering::SeqCst) {
+            let block_height = block.block.header.height;
+            tracing::log::info!(target: PROJECT_ID, "Processing block: {}", block_height);
+            transfers_indexer.process_block(&db, block).await.unwrap()
         }
-        "transactions" => {
-            let mut transactions_data = TransactionsData::new();
-            let db_last_block_height = transactions_data.last_block_height(&db).await;
-            let last_block_height = backfill_block_height.unwrap_or(db_last_block_height);
-            let is_cache_ready = transactions_data.is_cache_ready(last_block_height);
-            tracing::log::info!(target: PROJECT_ID, "Last block height: {}. Cache is ready: {}", last_block_height, is_cache_ready);
-
-            let start_block_height = if is_cache_ready {
-                last_block_height + 1
-            } else {
-                last_block_height.saturating_sub(SAFE_CATCH_UP_OFFSET)
-            };
-
-            let start_block_height = first_block_height.max(start_block_height);
-            let (sender, receiver) = mpsc::channel(100);
-            let mut builder = fetcher::FetcherConfigBuilder::new()
-                .chain_id(chain_id)
-                .num_threads(num_threads)
-                .start_block_height(start_block_height);
-            if let Some(auth_bearer_token) = auth_bearer_token {
-                builder = builder.auth_bearer_token(auth_bearer_token);
-            }
-            tokio::spawn(fetcher::start_fetcher(builder.build(), sender, is_running));
-            listen_blocks_for_transactions(receiver, db, transactions_data, last_block_height)
-                .await;
-        }
-        _ => {
-            panic!("Unknown command");
-        }
-    };
-
-    tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
-}
-
-async fn listen_blocks_for_transactions(
-    mut stream: mpsc::Receiver<BlockWithTxHashes>,
-    db: ClickDB,
-    mut transactions_data: TransactionsData,
-    last_block_height: u64,
-) {
-    let mut prev_block_hash = None;
-    while let Some(block) = stream.recv().await {
-        let block_height = block.block.header.height;
-        tracing::log::info!(target: PROJECT_ID, "Processing block: {}", block_height);
-        prev_block_hash = Some(
-            transactions_data
-                .process_block(&db, block, last_block_height, prev_block_hash)
-                .await
-                .unwrap(),
-        );
     }
     tracing::log::info!(target: PROJECT_ID, "Committing the last batch");
-    transactions_data.commit(&db).await.unwrap();
-    transactions_data.flush().await.unwrap();
+    transfers_indexer.commit(&db).await.unwrap();
+    transfers_indexer.flush().await.unwrap();
+
+    tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
 }

@@ -10,7 +10,7 @@ use fastnear_primitives::near_indexer_primitives::views::{
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use hashlink::LinkedHashMap;
 use serde::de::DeserializeOwned;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 const NEAR_BASE_FACTOR: f64 = 1e24;
 const NATIVE_NEAR_ASSET_ID: &str = "native:near";
@@ -26,7 +26,6 @@ pub struct BlockIndexer {
     pub block_hash: CryptoHash,
     pub previous_block_hash: CryptoHash,
     pub block_timestamp: u64,
-    pub task_results: Vec<TaskResult>,
 }
 
 impl BlockIndexer {
@@ -39,7 +38,6 @@ impl BlockIndexer {
             block_hash: CryptoHash::default(),
             previous_block_hash: CryptoHash::default(),
             block_timestamp: 0,
-            task_results: vec![],
         }
     }
 
@@ -164,12 +162,21 @@ impl BlockIndexer {
     pub fn process_block(
         &mut self,
         block: BlockWithTxHashes,
-        transfer_types: &HashSet<TransferType>,
+        transfer_types: &Option<HashSet<TransferType>>,
     ) -> anyhow::Result<()> {
         self.block_height = block.block.header.height;
         self.block_hash = block.block.header.hash;
         self.previous_block_hash = block.block.header.prev_hash;
         self.block_timestamp = block.block.header.timestamp_nanosec;
+
+        let has_transfer_type = |tt: &TransferType| {
+            if let Some(transfer_types) = transfer_types {
+                transfer_types.contains(tt)
+            } else {
+                true
+            }
+        };
+
         let mut global_action_index: u32 = 0;
         for shard in block.shards {
             for reo in shard.receipt_execution_outcomes {
@@ -216,7 +223,7 @@ impl BlockIndexer {
                             global_action_index += 1;
                             match action {
                                 ActionView::Transfer { deposit } => {
-                                    if !transfer_types.contains(&TransferType::NativeTransfer) {
+                                    if !has_transfer_type(&TransferType::NativeTransfer) {
                                         continue;
                                     }
 
@@ -239,7 +246,7 @@ impl BlockIndexer {
                                     row.method_name = Some(method_name.to_string());
                                     // Ignore yoctoNEAR deposits
                                     if deposit > 1
-                                        && transfer_types.contains(&TransferType::AttachedDeposit)
+                                        && has_transfer_type(&TransferType::AttachedDeposit)
                                     {
                                         let mut row = row.clone();
                                         row.transfer_index = transfer_index
@@ -255,7 +262,7 @@ impl BlockIndexer {
                                     }
 
                                     if method_name == "ft_transfer"
-                                        && transfer_types.contains(&TransferType::FtTransfer)
+                                        && has_transfer_type(&TransferType::FtTransfer)
                                     {
                                         let args = serde_json::from_slice::<FtTransferArgs>(&args);
                                         if args.is_err() {
@@ -274,7 +281,7 @@ impl BlockIndexer {
                                     }
 
                                     if method_name == "ft_transfer_call"
-                                        && transfer_types.contains(&TransferType::FtTransferCall)
+                                        && has_transfer_type(&TransferType::FtTransferCall)
                                     {
                                         let args = serde_json::from_slice::<FtTransferArgs>(&args);
                                         if args.is_err() {
@@ -295,7 +302,7 @@ impl BlockIndexer {
                                     }
 
                                     if method_name == "ft_resolve_transfer"
-                                        && transfer_types.contains(&TransferType::FtResolveTransfer)
+                                        && has_transfer_type(&TransferType::FtResolveTransfer)
                                     {
                                         let args =
                                             serde_json::from_slice::<FtResolveTransferArgs>(&args);
@@ -337,7 +344,7 @@ impl BlockIndexer {
 
                                     if (account_id.as_str() == WRAPPED_NEAR_MAINNET
                                         || account_id.as_str() == WRAPPED_NEAR_TESTNET)
-                                        && transfer_types.contains(&TransferType::WrappedNear)
+                                        && has_transfer_type(&TransferType::WrappedNear)
                                     {
                                         if method_name == "near_deposit" {
                                             row.amount = deposit;
