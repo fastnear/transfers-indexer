@@ -347,7 +347,7 @@ fn parse_account_state(result: Value) -> Result<TaskResult, RpcError> {
     let account_state: AccountStateResponse =
         serde_json::from_value(result).map_err(|e| RpcError::InvalidAccountStateResponse(e))?;
     Ok(Some(
-        serde_json::to_value(account_state.amount + account_state.locked).unwrap(),
+        serde_json::to_value(U128(account_state.amount + account_state.locked)).unwrap(),
     ))
 }
 

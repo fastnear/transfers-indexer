@@ -107,10 +107,10 @@ pub enum TaskIdOrValue<V> {
 
 pub enum TaskGroup {
     BlockBalances {
-        sender_start_of_block_balance: Option<TaskIdOrValue<u128>>,
-        sender_end_of_block_balance: Option<TaskIdOrValue<u128>>,
-        receiver_start_of_block_balance: Option<TaskIdOrValue<u128>>,
-        receiver_end_of_block_balance: Option<TaskIdOrValue<u128>>,
+        sender_start_of_block_balance: Option<TaskIdOrValue<U128>>,
+        sender_end_of_block_balance: Option<TaskIdOrValue<U128>>,
+        receiver_start_of_block_balance: Option<TaskIdOrValue<U128>>,
+        receiver_end_of_block_balance: Option<TaskIdOrValue<U128>>,
     },
     FtDecimals {
         decimals: TaskIdOrValue<u8>,
