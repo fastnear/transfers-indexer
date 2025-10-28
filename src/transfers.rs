@@ -105,6 +105,17 @@ impl TransfersIndexer {
         db.max("block_height", "transfers").await.unwrap_or(0)
     }
 
+    pub async fn last_block_in_range(
+        &self,
+        db: &ClickDB,
+        start_block: BlockHeight,
+        end_block: BlockHeight,
+    ) -> BlockHeight {
+        db.max_in_range("block_height", "transfers", start_block, end_block)
+            .await
+            .unwrap_or(start_block.saturating_sub(1))
+    }
+
     pub async fn flush(&mut self) -> anyhow::Result<()> {
         while let Some(handler) = self.commit_handlers.pop() {
             handler.await??;

@@ -27,7 +27,24 @@ impl ClickDB {
     pub async fn max(&self, column: &str, table: &str) -> clickhouse::error::Result<BlockHeight> {
         let block_height = self
             .client
-            .query(&format!("SELECT max({}) FROM {}", column, table))
+            .query(&format!("SELECT max({column}) FROM {table}"))
+            .fetch_one::<u64>()
+            .await?;
+        Ok(block_height)
+    }
+
+    pub async fn max_in_range(
+        &self,
+        column: &str,
+        table: &str,
+        start_block: BlockHeight,
+        end_block: BlockHeight,
+    ) -> clickhouse::error::Result<BlockHeight> {
+        let block_height = self
+            .client
+            .query(&format!(
+                "SELECT max({column}) FROM {table} where block_height >= {start_block} and block_height < {end_block}"
+            ))
             .fetch_one::<u64>()
             .await?;
         Ok(block_height)

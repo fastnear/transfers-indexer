@@ -98,7 +98,13 @@ async fn main() {
         .map(|v| v.parse().expect("Failed to parse end block height"));
 
     let mut transfers_indexer = transfers::TransfersIndexer::new(transfer_types.as_deref());
-    let db_last_block_height = transfers_indexer.last_block_height(&db).await;
+    let db_last_block_height = transfers_indexer
+        .last_block_in_range(
+            &db,
+            start_block_height.unwrap_or(0),
+            end_block_height.unwrap_or(10u64.pow(15)),
+        )
+        .await;
     let start_block_height = start_block_height
         .unwrap_or(db_last_block_height + 1)
         .max(first_block_height);
@@ -109,7 +115,7 @@ async fn main() {
         .num_threads(num_threads)
         .start_block_height(start_block_height);
     if let Some(end_block_height) = end_block_height {
-        builder = builder.end_block_height(end_block_height);
+        builder = builder.end_block_height(end_block_height.saturating_sub(1));
     }
     if let Some(auth_bearer_token) = auth_bearer_token {
         builder = builder.auth_bearer_token(auth_bearer_token);
