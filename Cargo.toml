@@ -1,6 +1,6 @@
 [package]
 name = "transfers-indexer"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Eugene The Dream"]
 rust-version = "1.86.0"
 edition = "2021"
