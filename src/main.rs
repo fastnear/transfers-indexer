@@ -105,9 +105,8 @@ async fn main() {
             end_block_height.unwrap_or(10u64.pow(15)),
         )
         .await;
-    let start_block_height = start_block_height
-        .unwrap_or(db_last_block_height + 1)
-        .max(first_block_height);
+    tracing::log::info!(target: PROJECT_ID, "Last block height in range: {}", db_last_block_height);
+    let start_block_height = (db_last_block_height + 1).max(first_block_height);
 
     let (sender, mut receiver) = mpsc::channel(100);
     let mut builder = fetcher::FetcherConfigBuilder::new()
