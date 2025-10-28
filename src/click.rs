@@ -24,15 +24,6 @@ impl ClickDB {
         }
     }
 
-    pub async fn max(&self, column: &str, table: &str) -> clickhouse::error::Result<BlockHeight> {
-        let block_height = self
-            .client
-            .query(&format!("SELECT max({column}) FROM {table}"))
-            .fetch_one::<u64>()
-            .await?;
-        Ok(block_height)
-    }
-
     pub async fn max_in_range(
         &self,
         column: &str,

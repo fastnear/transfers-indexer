@@ -101,10 +101,6 @@ impl TransfersIndexer {
         Ok(())
     }
 
-    pub async fn last_block_height(&self, db: &ClickDB) -> BlockHeight {
-        db.max("block_height", "transfers").await.unwrap_or(0)
-    }
-
     pub async fn last_block_in_range(
         &self,
         db: &ClickDB,
