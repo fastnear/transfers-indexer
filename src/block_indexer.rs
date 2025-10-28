@@ -11,11 +11,13 @@ use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use hashlink::LinkedHashMap;
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 const NEAR_BASE_FACTOR: f64 = 1e24;
 const NATIVE_NEAR_ASSET_ID: &str = "native:near";
 const WRAPPED_NEAR_MAINNET: &str = "wrap.near";
 const WRAPPED_NEAR_TESTNET: &str = "wrap.testnet";
+const INTENTS_ACCOUNT_ID: &str = "intents.near";
 
 const EVENT_STANDARD_FT: &str = "nep141";
 const EVENT_FT_TRANSFER: &str = "ft_transfer";
@@ -24,7 +26,7 @@ const EVENT_FT_BURN: &str = "ft_burn";
 
 const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
 
-const EVENT_STANDARD_MFT: &str = "nep245";
+const EVENT_STANDARD_MT: &str = "nep245";
 const EVENT_MFT_TRANSFER: &str = "mt_transfer";
 const EVENT_MFT_MINT: &str = "mt_mint";
 const EVENT_MFT_BURN: &str = "mt_burn";
@@ -188,16 +190,48 @@ impl BlockIndexer {
             .unwrap_or(TransferType::MtTransfer)
             .to_string();
         row.asset_type = AssetType::Mt.to_string();
+        // Trying to parse Decimals for `intents.near` from their token_id
+        let mut decimal_task = None;
+        if mt_transfer.contract_id == INTENTS_ACCOUNT_ID {
+            if let Some((token_standard, token_id)) = mt_transfer.token_id.split_once(",") {
+                if token_standard == EVENT_STANDARD_FT {
+                    if let Ok(contract_id) = AccountId::from_str(token_id) {
+                        decimal_task = Some(TaskGroup::Decimals {
+                            decimals: self.task(Task::FtDecimals {
+                                contract_id: contract_id.clone(),
+                                block_hash: self.block_hash,
+                            }),
+                        });
+                    }
+                } else if token_standard == EVENT_STANDARD_MT {
+                    if let Some((contract_id, token_id)) = token_id.split_once(",") {
+                        if let Ok(contract_id) = AccountId::from_str(contract_id) {
+                            decimal_task = Some(TaskGroup::Decimals {
+                                decimals: self.task(Task::MtDecimals {
+                                    contract_id: contract_id.clone(),
+                                    token_id: token_id.to_string(),
+                                    block_hash: self.block_hash,
+                                }),
+                            });
+                        }
+                    }
+                }
+            }
+        };
+        if decimal_task.is_none() {
+            decimal_task = Some(TaskGroup::Decimals {
+                decimals: self.task(Task::MtDecimals {
+                    contract_id: mt_transfer.contract_id.clone(),
+                    token_id: mt_transfer.token_id.clone(),
+                    block_hash: self.block_hash,
+                }),
+            });
+        }
+
         let pending_row = PendingRow {
             row,
             task_groups: vec![
-                TaskGroup::Decimals {
-                    decimals: self.task(Task::MtDecimals {
-                        contract_id: mt_transfer.contract_id.clone(),
-                        token_id: mt_transfer.token_id.clone(),
-                        block_hash: self.block_hash,
-                    }),
-                },
+                decimal_task.unwrap(),
                 TaskGroup::BlockBalances {
                     sender_start_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
                         self.task(Task::MtBalance {
@@ -400,7 +434,7 @@ impl BlockIndexer {
                                 }
                             }
 
-                            if event.standard == EVENT_STANDARD_MFT
+                            if event.standard == EVENT_STANDARD_MT
                                 && has_transfer_type(&TransferType::MtTransfer)
                             {
                                 if event.event == EVENT_MFT_TRANSFER {
