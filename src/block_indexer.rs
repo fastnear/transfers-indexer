@@ -176,6 +176,42 @@ impl BlockIndexer {
         self.pending_rows.push(pending_row);
     }
 
+    fn mt_decimal_task(&mut self, mt_transfer: &MtTransfer) -> TaskGroup {
+        if mt_transfer.contract_id == INTENTS_ACCOUNT_ID {
+            if let Some((token_standard, token_id)) = mt_transfer.token_id.split_once(":") {
+                if token_standard == EVENT_STANDARD_FT {
+                    if let Ok(contract_id) = AccountId::from_str(token_id) {
+                        return TaskGroup::Decimals {
+                            decimals: self.task(Task::FtDecimals {
+                                contract_id: contract_id.clone(),
+                                block_hash: self.block_hash,
+                            }),
+                        };
+                    }
+                } else if token_standard == EVENT_STANDARD_MT {
+                    if let Some((contract_id, token_id)) = token_id.split_once(":") {
+                        if let Ok(contract_id) = AccountId::from_str(contract_id) {
+                            return TaskGroup::Decimals {
+                                decimals: self.task(Task::MtDecimals {
+                                    contract_id: contract_id.clone(),
+                                    token_id: token_id.to_string(),
+                                    block_hash: self.block_hash,
+                                }),
+                            };
+                        }
+                    }
+                }
+            }
+        };
+        TaskGroup::Decimals {
+            decimals: self.task(Task::MtDecimals {
+                contract_id: mt_transfer.contract_id.clone(),
+                token_id: mt_transfer.token_id.clone(),
+                block_hash: self.block_hash,
+            }),
+        }
+    }
+
     pub fn add_pending_row_mt(
         &mut self,
         mut row: TransferRow,
@@ -190,48 +226,11 @@ impl BlockIndexer {
             .unwrap_or(TransferType::MtTransfer)
             .to_string();
         row.asset_type = AssetType::Mt.to_string();
-        // Trying to parse Decimals for `intents.near` from their token_id
-        let mut decimal_task = None;
-        if mt_transfer.contract_id == INTENTS_ACCOUNT_ID {
-            if let Some((token_standard, token_id)) = mt_transfer.token_id.split_once(",") {
-                if token_standard == EVENT_STANDARD_FT {
-                    if let Ok(contract_id) = AccountId::from_str(token_id) {
-                        decimal_task = Some(TaskGroup::Decimals {
-                            decimals: self.task(Task::FtDecimals {
-                                contract_id: contract_id.clone(),
-                                block_hash: self.block_hash,
-                            }),
-                        });
-                    }
-                } else if token_standard == EVENT_STANDARD_MT {
-                    if let Some((contract_id, token_id)) = token_id.split_once(",") {
-                        if let Ok(contract_id) = AccountId::from_str(contract_id) {
-                            decimal_task = Some(TaskGroup::Decimals {
-                                decimals: self.task(Task::MtDecimals {
-                                    contract_id: contract_id.clone(),
-                                    token_id: token_id.to_string(),
-                                    block_hash: self.block_hash,
-                                }),
-                            });
-                        }
-                    }
-                }
-            }
-        };
-        if decimal_task.is_none() {
-            decimal_task = Some(TaskGroup::Decimals {
-                decimals: self.task(Task::MtDecimals {
-                    contract_id: mt_transfer.contract_id.clone(),
-                    token_id: mt_transfer.token_id.clone(),
-                    block_hash: self.block_hash,
-                }),
-            });
-        }
 
         let pending_row = PendingRow {
             row,
             task_groups: vec![
-                decimal_task.unwrap(),
+                self.mt_decimal_task(&mt_transfer),
                 TaskGroup::BlockBalances {
                     sender_start_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
                         self.task(Task::MtBalance {
