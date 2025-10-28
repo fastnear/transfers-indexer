@@ -24,6 +24,11 @@ const EVENT_FT_BURN: &str = "ft_burn";
 
 const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
 
+const EVENT_STANDARD_MFT: &str = "nep245";
+const EVENT_MFT_TRANSFER: &str = "mt_transfer";
+const EVENT_MFT_MINT: &str = "mt_mint";
+const EVENT_MFT_BURN: &str = "mt_burn";
+
 pub struct BlockIndexer {
     pub task_cache: TaskCache,
     // Maps a task to its pending task ID
@@ -128,7 +133,7 @@ impl BlockIndexer {
         let pending_row = PendingRow {
             row,
             task_groups: vec![
-                TaskGroup::FtDecimals {
+                TaskGroup::Decimals {
                     decimals: self.task(Task::FtDecimals {
                         contract_id: ft_transfer.contract_id.clone(),
                         block_hash: self.block_hash,
@@ -159,6 +164,69 @@ impl BlockIndexer {
                     receiver_end_of_block_balance: ft_transfer.receiver_id.as_ref().map(|a| {
                         self.task(Task::FtBalance {
                             contract_id: ft_transfer.contract_id.clone(),
+                            account_id: a.clone(),
+                            block_hash: self.block_hash,
+                        })
+                    }),
+                },
+            ],
+        };
+        self.pending_rows.push(pending_row);
+    }
+
+    pub fn add_pending_row_mt(
+        &mut self,
+        mut row: TransferRow,
+        mt_transfer: MtTransfer,
+        transfer_type: Option<TransferType>,
+    ) {
+        row.asset_id = asset_id_from_mt(&mt_transfer.contract_id, &mt_transfer.token_id);
+        row.sender_id = mt_transfer.sender_id.as_ref().map(|id| id.to_string());
+        row.receiver_id = mt_transfer.receiver_id.as_ref().map(|id| id.to_string());
+        row.amount = mt_transfer.amount;
+        row.transfer_type = transfer_type
+            .unwrap_or(TransferType::MtTransfer)
+            .to_string();
+        row.asset_type = AssetType::Mt.to_string();
+        let pending_row = PendingRow {
+            row,
+            task_groups: vec![
+                TaskGroup::Decimals {
+                    decimals: self.task(Task::MtDecimals {
+                        contract_id: mt_transfer.contract_id.clone(),
+                        token_id: mt_transfer.token_id.clone(),
+                        block_hash: self.block_hash,
+                    }),
+                },
+                TaskGroup::BlockBalances {
+                    sender_start_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
+                        self.task(Task::MtBalance {
+                            contract_id: mt_transfer.contract_id.clone(),
+                            token_id: mt_transfer.token_id.clone(),
+                            account_id: a.clone(),
+                            block_hash: self.previous_block_hash,
+                        })
+                    }),
+                    sender_end_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
+                        self.task(Task::MtBalance {
+                            contract_id: mt_transfer.contract_id.clone(),
+                            token_id: mt_transfer.token_id.clone(),
+                            account_id: a.clone(),
+                            block_hash: self.block_hash,
+                        })
+                    }),
+                    receiver_start_of_block_balance: mt_transfer.receiver_id.as_ref().map(|a| {
+                        self.task(Task::MtBalance {
+                            contract_id: mt_transfer.contract_id.clone(),
+                            token_id: mt_transfer.token_id.clone(),
+                            account_id: a.clone(),
+                            block_hash: self.previous_block_hash,
+                        })
+                    }),
+                    receiver_end_of_block_balance: mt_transfer.receiver_id.as_ref().map(|a| {
+                        self.task(Task::MtBalance {
+                            contract_id: mt_transfer.contract_id.clone(),
+                            token_id: mt_transfer.token_id.clone(),
                             account_id: a.clone(),
                             block_hash: self.block_hash,
                         })
@@ -207,9 +275,9 @@ impl BlockIndexer {
 
                         // Parse FT logs and remember them, so we can ignore method name FT
                         // transfers later.
-                        let mut ft_transfers: HashMap<FtTransfer, usize> = HashMap::new();
-                        let mut add_ft_transfer = |ft_transfer: &FtTransfer, add: bool| {
-                            let v = ft_transfers.entry(ft_transfer.clone()).or_default();
+                        let mut transfers: HashMap<Transfer, usize> = HashMap::new();
+                        let mut add_transfer = |transfer: Transfer, add: bool| {
+                            let v = transfers.entry(transfer).or_default();
                             let prev = *v;
                             *v = if add {
                                 prev + 1
@@ -296,7 +364,7 @@ impl BlockIndexer {
                                             receiver_id: Some(data.new_owner_id.clone()),
                                             amount: data.amount,
                                         };
-                                        add_ft_transfer(&ft_transfer, true);
+                                        add_transfer((&ft_transfer).into(), true);
                                         self.add_pending_row_ft(row.clone(), ft_transfer, None);
                                     }
 
@@ -324,11 +392,83 @@ impl BlockIndexer {
                                             receiver_id,
                                             amount: data.amount,
                                         };
-                                        add_ft_transfer(&ft_transfer, true);
+                                        add_transfer((&ft_transfer).into(), true);
                                         self.add_pending_row_ft(row.clone(), ft_transfer, None);
                                     }
 
                                     continue;
+                                }
+                            }
+
+                            if event.standard == EVENT_STANDARD_MFT
+                                && has_transfer_type(&TransferType::MtTransfer)
+                            {
+                                if event.event == EVENT_MFT_TRANSFER {
+                                    for data_value in event.data {
+                                        let data: JsonEventMftTransfer =
+                                            match serde_json::from_value(data_value) {
+                                                Ok(event) => event,
+                                                Err(_) => continue,
+                                            };
+                                        if data.token_ids.len() != data.amounts.len() {
+                                            // Invalid event
+                                            continue;
+                                        }
+                                        for (token_id, amount) in
+                                            data.token_ids.into_iter().zip(data.amounts.into_iter())
+                                        {
+                                            row.transfer_index = transfer_index;
+                                            transfer_index += 1;
+                                            let mt_transfer = MtTransfer {
+                                                contract_id: account_id.clone(),
+                                                token_id,
+                                                sender_id: Some(data.old_owner_id.clone()),
+                                                receiver_id: Some(data.new_owner_id.clone()),
+                                                amount: amount.0,
+                                            };
+                                            add_transfer((&mt_transfer).into(), true);
+                                            self.add_pending_row_mt(row.clone(), mt_transfer, None);
+                                        }
+                                    }
+
+                                    continue;
+                                } else if event.event == EVENT_MFT_BURN
+                                    || event.event == EVENT_MFT_MINT
+                                {
+                                    for data_value in event.data {
+                                        let data: JsonEventMftMintOrBurn =
+                                            match serde_json::from_value(data_value) {
+                                                Ok(event) => event,
+                                                Err(_) => continue,
+                                            };
+                                        if data.token_ids.len() != data.amounts.len() {
+                                            // Invalid event
+                                            continue;
+                                        }
+                                        let (sender_id, receiver_id) =
+                                            if event.event == EVENT_MFT_MINT {
+                                                (None, Some(data.owner_id))
+                                            } else {
+                                                (Some(data.owner_id), None)
+                                            };
+                                        for (token_id, amount) in
+                                            data.token_ids.into_iter().zip(data.amounts.into_iter())
+                                        {
+                                            row.transfer_index = transfer_index;
+                                            transfer_index += 1;
+                                            let mt_transfer = MtTransfer {
+                                                contract_id: account_id.clone(),
+                                                token_id,
+                                                sender_id: sender_id.clone(),
+                                                receiver_id: receiver_id.clone(),
+                                                amount: amount.0,
+                                            };
+                                            add_transfer((&mt_transfer).into(), true);
+                                            self.add_pending_row_mt(row.clone(), mt_transfer, None);
+                                        }
+
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -419,7 +559,7 @@ impl BlockIndexer {
                                             receiver_id: Some(args.receiver_id),
                                             amount: args.amount,
                                         };
-                                        if add_ft_transfer(&ft_transfer, false) {
+                                        if add_transfer((&ft_transfer).into(), false) {
                                             self.add_pending_row_ft(row, ft_transfer, None);
                                         }
                                         continue;
@@ -459,7 +599,7 @@ impl BlockIndexer {
                                             receiver_id: Some(args.sender_id),
                                             amount: refund_amount,
                                         };
-                                        if add_ft_transfer(&ft_transfer, false) {
+                                        if add_transfer((&ft_transfer).into(), false) {
                                             self.add_pending_row_ft(row, ft_transfer, None);
                                         }
                                         continue;
@@ -476,7 +616,7 @@ impl BlockIndexer {
                                                 receiver_id: Some(predecessor_id.clone()),
                                                 amount: deposit,
                                             };
-                                            if add_ft_transfer(&ft_transfer, false) {
+                                            if add_transfer((&ft_transfer).into(), false) {
                                                 self.add_pending_row_ft(
                                                     row,
                                                     ft_transfer,
@@ -500,7 +640,7 @@ impl BlockIndexer {
                                                 receiver_id: None,
                                                 amount: args.amount,
                                             };
-                                            if add_ft_transfer(&ft_transfer, false) {
+                                            if add_transfer((&ft_transfer).into(), false) {
                                                 self.add_pending_row_ft(
                                                     row,
                                                     ft_transfer,
@@ -569,7 +709,7 @@ impl BlockIndexer {
                                 resolve_task(&task_results, receiver_end_of_block_balance)
                                     .map(|v| v.0);
                         }
-                        TaskGroup::FtDecimals { decimals } => {
+                        TaskGroup::Decimals { decimals } => {
                             if let Some(decimals) = resolve_task(&task_results, Some(decimals)) {
                                 let factor = 10f64.powi(decimals as i32);
                                 row.human_amount = Some(row.amount as f64 / factor);
@@ -591,6 +731,10 @@ impl BlockIndexer {
 
 fn asset_id_from_ft(contract_id: &AccountId) -> String {
     format!("nep141:{}", contract_id)
+}
+
+fn asset_id_from_mt(contract_id: &AccountId, token_id: &String) -> String {
+    format!("nep245:{}:{}", contract_id, token_id)
 }
 
 fn resolve_task<V: DeserializeOwned>(

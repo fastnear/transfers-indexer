@@ -91,6 +91,11 @@ struct FtMetadata {
     decimals: u8,
 }
 
+#[derive(Deserialize)]
+struct MTBaseTokenMetadata {
+    decimals: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct RpcConfig {
     pub rpcs: Vec<String>,
@@ -234,6 +239,27 @@ async fn execute_task(
     timeout: Duration,
 ) -> Result<TaskResult, RpcError> {
     match task {
+        Task::AccountBalance {
+            account_id,
+            block_hash,
+        } => {
+            let value = rpc_json_request(
+                json!({
+                    "request_type": "view_account",
+                    "account_id": account_id,
+                }),
+                client,
+                url,
+                Some(block_hash),
+                bearer_token,
+                timeout,
+            )
+            .await?;
+            match value {
+                Some(value) => parse_account_state(value),
+                None => Ok(None),
+            }
+        }
         Task::FtBalance {
             contract_id,
             account_id,
@@ -253,28 +279,7 @@ async fn execute_task(
                 timeout,
             ).await?;
             match value {
-                Some(value) => parse_ft_balance(value),
-                None => Ok(None),
-            }
-        }
-        Task::AccountBalance {
-            account_id,
-            block_hash,
-        } => {
-            let value = rpc_json_request(
-                json!({
-                    "request_type": "view_account",
-                    "account_id": account_id,
-                }),
-                client,
-                url,
-                Some(block_hash),
-                bearer_token,
-                timeout,
-            )
-            .await?;
-            match value {
-                Some(value) => parse_account_state(value),
+                Some(value) => parse_mt_or_ft_balance(value),
                 None => Ok(None),
             }
         }
@@ -298,6 +303,54 @@ async fn execute_task(
             .await?;
             match value {
                 Some(value) => parse_ft_decimals(value),
+                None => Ok(None),
+            }
+        }
+        Task::MtBalance {
+            contract_id,
+            token_id,
+            account_id,
+            block_hash,
+        } => {
+            let value = rpc_json_request(
+                json!({
+                    "request_type": "call_function",
+                    "account_id": contract_id,
+                    "method_name": "mt_balance_of",
+                    "args_base64": BASE64_STANDARD.encode(json!({"account_id": account_id, "token_id": token_id}).to_string()),
+                }),
+                client,
+                url,
+                Some(block_hash),
+                bearer_token,
+                timeout,
+            ).await?;
+            match value {
+                Some(value) => parse_mt_or_ft_balance(value),
+                None => Ok(None),
+            }
+        }
+        Task::MtDecimals {
+            contract_id,
+            token_id,
+            block_hash,
+        } => {
+            let value = rpc_json_request(
+                json!({
+                    "request_type": "call_function",
+                    "account_id": contract_id,
+                    "method_name": "mt_metadata_base_by_token_id",
+                    "args_base64": BASE64_STANDARD.encode(json!({"token_ids": &[token_id]}).to_string()),
+                }),
+                client,
+                url,
+                Some(block_hash),
+                bearer_token,
+                timeout,
+            )
+            .await?;
+            match value {
+                Some(value) => parse_mt_decimals(value),
                 None => Ok(None),
             }
         }
@@ -351,7 +404,7 @@ fn parse_account_state(result: Value) -> Result<TaskResult, RpcError> {
     ))
 }
 
-fn parse_ft_balance(result: Value) -> Result<TaskResult, RpcError> {
+fn parse_mt_or_ft_balance(result: Value) -> Result<TaskResult, RpcError> {
     let fc: FunctionCallResponse =
         serde_json::from_value(result).map_err(|e| RpcError::InvalidFunctionCallResponse(e))?;
     if let Some(error) = fc.error {
@@ -372,5 +425,17 @@ fn parse_ft_decimals(result: Value) -> Result<TaskResult, RpcError> {
     Ok(fc.result.and_then(|result| {
         let metadata: Option<FtMetadata> = serde_json::from_slice(&result).ok();
         metadata.map(|b| serde_json::to_value(b.decimals).unwrap())
+    }))
+}
+
+fn parse_mt_decimals(result: Value) -> Result<TaskResult, RpcError> {
+    let fc: FunctionCallResponse =
+        serde_json::from_value(result).map_err(|e| RpcError::InvalidFunctionCallResponse(e))?;
+    if let Some(error) = fc.error {
+        tracing::debug!(target: TARGET_RPC, "FCR Error: {}", error);
+    }
+    Ok(fc.result.and_then(|result| {
+        let metadata: Option<Vec<MTBaseTokenMetadata>> = serde_json::from_slice(&result).ok();
+        metadata.and_then(|b| b.get(0).map(|b| serde_json::to_value(b.decimals).unwrap()))
     }))
 }

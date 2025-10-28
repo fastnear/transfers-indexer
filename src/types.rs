@@ -15,6 +15,7 @@ pub enum TransferType {
     AttachedDeposit,
     FtTransfer,
     WrappedNear,
+    MtTransfer,
 }
 
 impl Display for TransferType {
@@ -28,6 +29,8 @@ pub enum AssetType {
     Near,
     /// NEP-141 Fungible Token
     Ft,
+    /// NEP-245 Multi Token
+    Mt,
 }
 
 impl Display for AssetType {
@@ -43,6 +46,7 @@ impl TransferType {
             TransferType::AttachedDeposit => TRANSFER_MULTIPLIER - 2,
             TransferType::FtTransfer => 0,
             TransferType::WrappedNear => 0,
+            TransferType::MtTransfer => 0,
         }
     }
 }
@@ -92,6 +96,19 @@ pub enum Task {
         #[derivative(Hash = "ignore")]
         block_hash: CryptoHash,
     },
+    MtBalance {
+        contract_id: AccountId,
+        token_id: String,
+        account_id: AccountId,
+        block_hash: CryptoHash,
+    },
+    MtDecimals {
+        contract_id: AccountId,
+        token_id: String,
+        #[derivative(PartialEq = "ignore")]
+        #[derivative(Hash = "ignore")]
+        block_hash: CryptoHash,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
@@ -112,7 +129,7 @@ pub enum TaskGroup {
         receiver_start_of_block_balance: Option<TaskIdOrValue<U128>>,
         receiver_end_of_block_balance: Option<TaskIdOrValue<U128>>,
     },
-    FtDecimals {
+    Decimals {
         decimals: TaskIdOrValue<u8>,
     },
 }
@@ -159,6 +176,33 @@ pub struct FtTransfer {
     pub amount: u128,
 }
 
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct MtTransfer {
+    pub contract_id: AccountId,
+    pub token_id: String,
+    pub sender_id: Option<AccountId>,
+    pub receiver_id: Option<AccountId>,
+    pub amount: u128,
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub enum Transfer {
+    Ft(FtTransfer),
+    Mft(MtTransfer),
+}
+
+impl From<&FtTransfer> for Transfer {
+    fn from(ft_transfer: &FtTransfer) -> Self {
+        Self::Ft(ft_transfer.clone())
+    }
+}
+
+impl From<&MtTransfer> for Transfer {
+    fn from(mt_transfer: &MtTransfer) -> Self {
+        Self::Mft(mt_transfer.clone())
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsonEvent {
@@ -181,4 +225,19 @@ pub struct JsonEventFtMintOrBurn {
     pub owner_id: AccountId,
     #[serde(with = "dec_format")]
     pub amount: u128,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonEventMftTransfer {
+    pub old_owner_id: AccountId,
+    pub new_owner_id: AccountId,
+    pub token_ids: Vec<String>,
+    pub amounts: Vec<U128>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonEventMftMintOrBurn {
+    pub owner_id: AccountId,
+    pub token_ids: Vec<String>,
+    pub amounts: Vec<U128>,
 }
