@@ -108,6 +108,13 @@ async fn main() {
     tracing::log::info!(target: PROJECT_ID, "Last block height in range: {}", db_last_block_height);
     let start_block_height = (db_last_block_height + 1).max(first_block_height);
 
+    if let Some(end_block_height) = end_block_height {
+        if start_block_height >= end_block_height {
+            tracing::log::info!(target: PROJECT_ID, "Nothing to do. The range is full.");
+            return;
+        }
+    }
+
     let (sender, mut receiver) = mpsc::channel(100);
     let mut builder = fetcher::FetcherConfigBuilder::new()
         .chain_id(chain_id)
