@@ -9,6 +9,7 @@ use fastnear_primitives::near_indexer_primitives::views::{
 };
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use hashlink::LinkedHashMap;
+use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -698,6 +699,7 @@ impl BlockIndexer {
 
     pub async fn execute_tasks(
         self,
+        client: &Client,
         rpc_config: &RpcConfig,
     ) -> anyhow::Result<(Vec<TransferRow>, TaskCache)> {
         if self.pending_rows.is_empty() {
@@ -709,14 +711,17 @@ impl BlockIndexer {
             .into_iter()
             .map(|(k, _v)| k)
             .collect::<Vec<_>>();
-        let task_results = rpc::fetch_from_rpc(&tasks, rpc_config).await?;
+        let (task_results, intents_tokens) = tokio::try_join!(
+            rpc::fetch_from_rpc(client, &tasks, rpc_config),
+            rpc::fetch_intents_prices(client, rpc_config, self.block_timestamp, true)
+        )?;
         assert_eq!(
             task_results.len(),
             tasks.len(),
             "Invalid number of tasks returned"
         );
 
-        let rows = self
+        let mut rows: Vec<TransferRow> = self
             .pending_rows
             .into_iter()
             .map(|pending_row| {
@@ -754,6 +759,20 @@ impl BlockIndexer {
             })
             .collect();
 
+        if let Some(intents_tokens) = intents_tokens {
+            let prices: HashMap<String, f64> = intents_tokens
+                .into_iter()
+                .map(|token| (token.asset_id, token.price))
+                .collect();
+            rows.iter_mut().for_each(|row| {
+                row.usd_amount = row.human_amount.and_then(|amount| {
+                    prices
+                        .get(&extract_original_asset_id(&row.asset_id))
+                        .map(|price| amount * price)
+                });
+            });
+        }
+
         let mut task_cache = self.task_cache;
         task_cache.retain(|task, _| matches!(task, Task::FtDecimals { .. }));
         task_cache.extend(tasks.into_iter().zip(task_results.into_iter()));
@@ -768,6 +787,19 @@ fn asset_id_from_ft(contract_id: &AccountId) -> String {
 
 fn asset_id_from_mt(contract_id: &AccountId, token_id: &String) -> String {
     format!("nep245:{}:{}", contract_id, token_id)
+}
+
+fn extract_original_asset_id(asset_id: &String) -> String {
+    if let Some((token_standard, rest)) = asset_id.split_once(":") {
+        if token_standard == EVENT_STANDARD_MT {
+            if let Some((contract_id, rest)) = rest.split_once(":") {
+                if contract_id == INTENTS_ACCOUNT_ID {
+                    return rest.to_string();
+                }
+            }
+        }
+    }
+    asset_id.to_string()
 }
 
 fn resolve_task<V: DeserializeOwned>(

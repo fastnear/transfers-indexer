@@ -241,3 +241,28 @@ pub struct JsonEventMftMintOrBurn {
     pub token_ids: Vec<String>,
     pub amounts: Vec<U128>,
 }
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IntentsTokenResponse {
+    /// Unique asset identifier
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    /// Number of decimals for the token
+    #[serde(rename = "decimals")]
+    pub decimals: u8,
+    /// Blockchain associated with the token
+    #[serde(rename = "blockchain")]
+    pub blockchain: String,
+    /// Token symbol (e.g. BTC, ETH)
+    #[serde(rename = "symbol")]
+    pub symbol: String,
+    /// Current price of the token in USD
+    #[serde(rename = "price")]
+    pub price: f64,
+    /// Date when the token price was last updated
+    #[serde(rename = "priceUpdatedAt")]
+    pub price_updated_at: String,
+    /// Contract address of the token
+    #[serde(rename = "contractAddress", skip_serializing_if = "Option::is_none")]
+    pub contract_address: Option<String>,
+}
