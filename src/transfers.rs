@@ -5,6 +5,7 @@ use crate::block_indexer::BlockIndexer;
 use crate::rpc::RpcConfig;
 use crate::types::*;
 use fastnear_primitives::near_primitives::types::BlockHeight;
+use reqwest::Client;
 
 pub struct TransfersIndexer {
     pub commit_every_block: bool,
@@ -13,6 +14,7 @@ pub struct TransfersIndexer {
     pub transfer_types: Option<HashSet<TransferType>>,
     pub task_cache: Option<TaskCache>,
     pub rpc_config: RpcConfig,
+    pub client: Client,
 }
 
 impl TransfersIndexer {
@@ -28,6 +30,7 @@ impl TransfersIndexer {
             transfer_types: transfer_types.map(|types| types.iter().copied().collect()),
             task_cache: None,
             rpc_config,
+            client: Client::new(),
         }
     }
 
@@ -88,7 +91,9 @@ impl TransfersIndexer {
         block_indexer.process_block(block, &self.transfer_types)?;
 
         // Execute tasks and fill pending rows
-        let (rows, task_cache) = block_indexer.execute_tasks(&self.rpc_config).await?;
+        let (rows, task_cache) = block_indexer
+            .execute_tasks(&self.client, &self.rpc_config)
+            .await?;
         self.rows.extend(rows);
         self.task_cache = Some(task_cache);
 

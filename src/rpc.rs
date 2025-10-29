@@ -14,6 +14,8 @@ const RPC_TIMEOUT: Duration = Duration::from_millis(5000);
 const TARGET_RPC: &str = "rpc";
 const RPC_ERROR_UNKNOWN_BLOCK: &str = "UNKNOWN_BLOCK";
 const RPC_ERROR_UNAVAILABLE_SHARD: &str = "UNAVAILABLE_SHARD";
+const INTENTS_TOKENS_URL: &str = "https://1click.chaindefuser.com/v0/tokens";
+const DEFAULT_MAX_PRICE_LATENCY_NS: u64 = 5 * 10u64.pow(9);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -103,6 +105,7 @@ pub struct RpcConfig {
     pub bearer_token: Option<String>,
     pub timeout: Duration,
     pub num_iterations: usize,
+    pub max_price_latency_ns: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +141,9 @@ impl RpcConfig {
                 .map(|s| Duration::from_millis(s.parse().unwrap()))
                 .unwrap_or(RPC_TIMEOUT),
             num_iterations,
+            max_price_latency_ns: env::var("MAX_PRICE_LATENCY_NS")
+                .map(|s| s.parse().unwrap())
+                .unwrap_or(DEFAULT_MAX_PRICE_LATENCY_NS),
         };
         assert!(config.concurrency > 0);
         assert!(config.rpcs.len() > 0);
@@ -146,6 +152,7 @@ impl RpcConfig {
 }
 
 pub async fn fetch_from_rpc(
+    client: &Client,
     tasks: &[Task],
     rpc_config: &RpcConfig,
 ) -> Result<Vec<TaskResult>, RpcError> {
@@ -154,7 +161,6 @@ pub async fn fetch_from_rpc(
     }
     let mut results: Vec<(TaskId, TaskResult)> = Vec::new();
     let start = std::time::Instant::now();
-    let client = Client::new();
     let (tx, mut rx) =
         mpsc::channel::<Result<(TaskId, TaskResult), RpcError>>(rpc_config.concurrency);
     let rpcs = &rpc_config.rpcs;
@@ -352,6 +358,47 @@ async fn execute_task(
             match value {
                 Some(value) => parse_mt_decimals(value),
                 None => Ok(None),
+            }
+        }
+    }
+}
+
+pub async fn fetch_intents_prices_internal(
+    client: &Client,
+    rpc_config: &RpcConfig,
+) -> Result<Vec<IntentsTokenResponse>, RpcError> {
+    let response = client
+        .get(INTENTS_TOKENS_URL)
+        .timeout(rpc_config.timeout)
+        .send()
+        .await?;
+    Ok(response
+        .error_for_status()?
+        .json::<Vec<IntentsTokenResponse>>()
+        .await?)
+}
+
+pub async fn fetch_intents_prices(
+    client: &Client,
+    rpc_config: &RpcConfig,
+    block_timestamp: u64,
+    ignore_errors: bool,
+) -> Result<Option<Vec<IntentsTokenResponse>>, RpcError> {
+    let current_time_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
+    if time_diff_ns > rpc_config.max_price_latency_ns {
+        return Ok(None);
+    }
+    match fetch_intents_prices_internal(client, rpc_config).await {
+        Ok(res) => Ok(Some(res)),
+        Err(e) => {
+            if ignore_errors {
+                Ok(None)
+            } else {
+                Err(e)
             }
         }
     }
