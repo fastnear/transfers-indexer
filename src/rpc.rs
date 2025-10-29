@@ -24,7 +24,6 @@ pub enum RpcError {
     InvalidFunctionCallResponse(serde_json::Error),
     InvalidAccountStateResponse(serde_json::Error),
     RetriableRpcError(String),
-    InvalidIntentsResponse(serde_json::Error),
 }
 
 impl From<reqwest::Error> for RpcError {
