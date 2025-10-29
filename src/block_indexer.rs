@@ -17,7 +17,7 @@ use std::str::FromStr;
 const NEAR_BASE_FACTOR: f64 = 1e24;
 const NATIVE_NEAR_ASSET_ID: &str = "native:near";
 const WRAPPED_NEAR_MAINNET: &str = "wrap.near";
-const WRAPPED_NEAR_TESTNET: &str = "wrap.testnet";
+const INTENTS_WNEAR_ASSET_ID: &str = "nep141:wrap.near";
 const INTENTS_ACCOUNT_ID: &str = "intents.near";
 
 const EVENT_STANDARD_FT: &str = "nep141";
@@ -639,8 +639,7 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    if (account_id.as_str() == WRAPPED_NEAR_MAINNET
-                                        || account_id.as_str() == WRAPPED_NEAR_TESTNET)
+                                    if (account_id.as_str() == WRAPPED_NEAR_MAINNET)
                                         && has_transfer_type(&TransferType::WrappedNear)
                                     {
                                         if method_name == "near_deposit" {
@@ -767,7 +766,7 @@ impl BlockIndexer {
             rows.iter_mut().for_each(|row| {
                 row.usd_amount = row.human_amount.and_then(|amount| {
                     prices
-                        .get(&extract_original_asset_id(&row.asset_id))
+                        .get(&map_asset_id_to_intents(&row.asset_id))
                         .map(|price| amount * price)
                 });
             });
@@ -789,7 +788,10 @@ fn asset_id_from_mt(contract_id: &AccountId, token_id: &String) -> String {
     format!("nep245:{}:{}", contract_id, token_id)
 }
 
-fn extract_original_asset_id(asset_id: &String) -> String {
+fn map_asset_id_to_intents(asset_id: &String) -> String {
+    if asset_id == NATIVE_NEAR_ASSET_ID {
+        return INTENTS_WNEAR_ASSET_ID.to_string();
+    }
     if let Some((token_standard, rest)) = asset_id.split_once(":") {
         if token_standard == EVENT_STANDARD_MT {
             if let Some((contract_id, rest)) = rest.split_once(":") {
