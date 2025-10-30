@@ -112,9 +112,15 @@ impl TransfersIndexer {
         start_block: BlockHeight,
         end_block: BlockHeight,
     ) -> BlockHeight {
-        db.max_in_range("block_height", "transfers", start_block, end_block)
+        let res = db
+            .max_in_range("block_height", "transfers", start_block, end_block)
             .await
-            .unwrap_or(start_block.saturating_sub(1))
+            .unwrap_or(0);
+        if res == 0 {
+            start_block.saturating_sub(1)
+        } else {
+            res
+        }
     }
 
     pub async fn flush(&mut self) -> anyhow::Result<()> {
