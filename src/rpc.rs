@@ -360,6 +360,31 @@ async fn execute_task(
                 None => Ok(None),
             }
         }
+        Task::CustomViewCall {
+            contract_id,
+            method_name,
+            arguments,
+            block_hash,
+        } => {
+            let value = rpc_json_request(
+                json!({
+                    "request_type": "call_function",
+                    "account_id": contract_id,
+                    "method_name": method_name,
+                    "args_base64": BASE64_STANDARD.encode(arguments),
+                }),
+                client,
+                url,
+                Some(block_hash),
+                bearer_token,
+                timeout,
+            )
+            .await?;
+            match value {
+                Some(value) => parse_custom_view_call(value),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -485,4 +510,15 @@ fn parse_mt_decimals(result: Value) -> Result<TaskResult, RpcError> {
         let metadata: Option<Vec<MTBaseTokenMetadata>> = serde_json::from_slice(&result).ok();
         metadata.and_then(|b| b.get(0).map(|b| serde_json::to_value(b.decimals).unwrap()))
     }))
+}
+
+fn parse_custom_view_call(result: Value) -> Result<TaskResult, RpcError> {
+    let fc: FunctionCallResponse =
+        serde_json::from_value(result).map_err(|e| RpcError::InvalidFunctionCallResponse(e))?;
+    if let Some(error) = fc.error {
+        tracing::debug!(target: TARGET_RPC, "FCR Error: {}", error);
+    }
+    Ok(fc
+        .result
+        .and_then(|result| serde_json::from_slice(&result).ok()))
 }

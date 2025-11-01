@@ -15,10 +15,17 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 const NEAR_BASE_FACTOR: f64 = 1e24;
-const NATIVE_NEAR_ASSET_ID: &str = "native:near";
-const WRAPPED_NEAR_MAINNET: &str = "wrap.near";
-const INTENTS_WNEAR_ASSET_ID: &str = "nep141:wrap.near";
-const INTENTS_ACCOUNT_ID: &str = "intents.near";
+const ASSET_ID_NATIVE_NEAR: &str = "native:near";
+const ACCOUNT_ID_WRAPPED: &str = "wrap.near";
+const ASSET_ID_WRAPPED_NEAR: &str = "nep141:wrap.near";
+const ACCOUNT_ID_INTENTS: &str = "intents.near";
+
+const ACCOUNT_ID_STNEAR: &str = "meta-pool.near";
+const ASSET_ID_STNEAR: &str = "nep141:meta-pool.near";
+const ACCOUNT_ID_LINEAR: &str = "linear-protocol.near";
+const ASSET_ID_LINEAR: &str = "nep141:linear-protocol.near";
+const ACCOUNT_ID_RNEAR: &str = "lst.rhealab.near";
+const ASSET_ID_RNEAR: &str = "nep141:lst.rhealab.near";
 
 const EVENT_STANDARD_FT: &str = "nep141";
 const EVENT_FT_TRANSFER: &str = "ft_transfer";
@@ -82,7 +89,7 @@ impl BlockIndexer {
         sender_id: Option<&AccountId>,
         receiver_id: Option<&AccountId>,
     ) {
-        row.asset_id = NATIVE_NEAR_ASSET_ID.to_string();
+        row.asset_id = ASSET_ID_NATIVE_NEAR.to_string();
         row.human_amount = Some(row.amount as f64 / NEAR_BASE_FACTOR);
         row.sender_id = sender_id.map(|id| id.to_string());
         row.receiver_id = receiver_id.map(|id| id.to_string());
@@ -133,7 +140,7 @@ impl BlockIndexer {
             .unwrap_or(TransferType::FtTransfer)
             .to_string();
         row.asset_type = AssetType::Ft.to_string();
-        let pending_row = PendingRow {
+        let mut pending_row = PendingRow {
             row,
             task_groups: vec![
                 TaskGroup::Decimals {
@@ -174,11 +181,41 @@ impl BlockIndexer {
                 },
             ],
         };
+        if let Some(task) = self.get_custom_price_task(&pending_row.row.asset_id) {
+            pending_row.task_groups.push(TaskGroup::LstPrice {
+                lst_price: self.task(task),
+            });
+        }
+
         self.pending_rows.push(pending_row);
     }
 
+    fn get_custom_price_task(&mut self, asset_id: &str) -> Option<Task> {
+        match asset_id {
+            ASSET_ID_STNEAR => Some(Task::CustomViewCall {
+                contract_id: ACCOUNT_ID_STNEAR.parse().unwrap(),
+                method_name: "get_st_near_price".to_string(),
+                arguments: "{}".to_string(),
+                block_hash: self.block_hash,
+            }),
+            ASSET_ID_LINEAR => Some(Task::CustomViewCall {
+                contract_id: ACCOUNT_ID_LINEAR.parse().unwrap(),
+                method_name: "ft_price".to_string(),
+                arguments: "{}".to_string(),
+                block_hash: self.block_hash,
+            }),
+            ASSET_ID_RNEAR => Some(Task::CustomViewCall {
+                contract_id: ACCOUNT_ID_RNEAR.parse().unwrap(),
+                method_name: "ft_price".to_string(),
+                arguments: "{}".to_string(),
+                block_hash: self.block_hash,
+            }),
+            _ => None,
+        }
+    }
+
     fn mt_decimal_task(&mut self, mt_transfer: &MtTransfer) -> TaskGroup {
-        if mt_transfer.contract_id == INTENTS_ACCOUNT_ID {
+        if mt_transfer.contract_id == ACCOUNT_ID_INTENTS {
             if let Some((token_standard, token_id)) = mt_transfer.token_id.split_once(":") {
                 if token_standard == EVENT_STANDARD_FT {
                     if let Ok(contract_id) = AccountId::from_str(token_id) {
@@ -228,7 +265,7 @@ impl BlockIndexer {
             .to_string();
         row.asset_type = AssetType::Mt.to_string();
 
-        let pending_row = PendingRow {
+        let mut pending_row = PendingRow {
             row,
             task_groups: vec![
                 self.mt_decimal_task(&mt_transfer),
@@ -268,6 +305,14 @@ impl BlockIndexer {
                 },
             ],
         };
+        if let Some(task) =
+            self.get_custom_price_task(&map_asset_id_to_intents(&pending_row.row.asset_id))
+        {
+            pending_row.task_groups.push(TaskGroup::LstPrice {
+                lst_price: self.task(task),
+            });
+        }
+
         self.pending_rows.push(pending_row);
     }
 
@@ -639,7 +684,7 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    if (account_id.as_str() == WRAPPED_NEAR_MAINNET)
+                                    if (account_id.as_str() == ACCOUNT_ID_WRAPPED)
                                         && has_transfer_type(&TransferType::WrappedNear)
                                     {
                                         if method_name == "near_deposit" {
@@ -720,6 +765,8 @@ impl BlockIndexer {
             "Invalid number of tasks returned"
         );
 
+        let mut lst_prices: HashMap<String, f64> = HashMap::new();
+
         let mut rows: Vec<TransferRow> = self
             .pending_rows
             .into_iter()
@@ -752,6 +799,12 @@ impl BlockIndexer {
                                 row.human_amount = Some(row.amount as f64 / factor);
                             }
                         }
+                        TaskGroup::LstPrice { lst_price } => {
+                            if let Some(price) = resolve_task(&task_results, Some(lst_price)) {
+                                let factor = price.0 as f64 / NEAR_BASE_FACTOR;
+                                lst_prices.insert(map_asset_id_to_intents(&row.asset_id), factor);
+                            }
+                        }
                     }
                 }
                 row
@@ -759,10 +812,15 @@ impl BlockIndexer {
             .collect();
 
         if let Some(intents_tokens) = intents_tokens {
-            let prices: HashMap<String, f64> = intents_tokens
+            let mut prices: HashMap<String, f64> = intents_tokens
                 .into_iter()
                 .map(|token| (token.asset_id, token.price))
                 .collect();
+            if let Some(near_price) = prices.get(ASSET_ID_WRAPPED_NEAR).cloned() {
+                for (asset_id, factor) in lst_prices {
+                    prices.insert(asset_id, factor * near_price);
+                }
+            }
             rows.iter_mut().for_each(|row| {
                 row.usd_amount = row.human_amount.and_then(|amount| {
                     prices
@@ -789,13 +847,13 @@ fn asset_id_from_mt(contract_id: &AccountId, token_id: &String) -> String {
 }
 
 fn map_asset_id_to_intents(asset_id: &String) -> String {
-    if asset_id == NATIVE_NEAR_ASSET_ID {
-        return INTENTS_WNEAR_ASSET_ID.to_string();
+    if asset_id == ASSET_ID_NATIVE_NEAR {
+        return ASSET_ID_WRAPPED_NEAR.to_string();
     }
     if let Some((token_standard, rest)) = asset_id.split_once(":") {
         if token_standard == EVENT_STANDARD_MT {
             if let Some((contract_id, rest)) = rest.split_once(":") {
-                if contract_id == INTENTS_ACCOUNT_ID {
+                if contract_id == ACCOUNT_ID_INTENTS {
                     return rest.to_string();
                 }
             }
