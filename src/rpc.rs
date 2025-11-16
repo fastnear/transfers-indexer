@@ -403,14 +403,7 @@ pub async fn fetch_intents_prices(
     rpc_config: &RpcConfig,
     ignore_errors: bool,
 ) -> Result<Option<Vec<IntentsTokenResponse>>, RpcError> {
-    // let current_time_ns = std::time::SystemTime::now()
-    //     .duration_since(std::time::UNIX_EPOCH)
-    //     .unwrap()
-    //     .as_nanos() as u64;
-    // let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
-    // if time_diff_ns > rpc_config.max_price_latency_ns {
-    //     return Ok(None);
-    // }
+
     match fetch_intents_prices_internal(client, rpc_config).await {
         Ok(res) => Ok(Some(res)),
         Err(e) => {

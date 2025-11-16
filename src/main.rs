@@ -119,7 +119,7 @@ async fn main() {
         }
     }
 
-    // Stating intents pricing thread
+    // Starting intents pricing thread
     if end_block_height.is_none() {
         transfers_indexer.price_history = Some(pricing::start_fetcher(
             is_running.clone(),

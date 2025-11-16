@@ -812,7 +812,7 @@ impl BlockIndexer {
 
         if let Some(price_history) = price_history.as_ref() {
             let mut prices = price_history
-                .as_ref()
+
                 .read()
                 .unwrap()
                 .get(self.block_timestamp);
