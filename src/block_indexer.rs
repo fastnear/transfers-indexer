@@ -1,5 +1,6 @@
 use crate::types::*;
 
+use crate::pricing::PriceHistorySingleton;
 use crate::rpc;
 use crate::rpc::RpcConfig;
 use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
@@ -745,6 +746,7 @@ impl BlockIndexer {
         self,
         client: &Client,
         rpc_config: &RpcConfig,
+        price_history: &Option<PriceHistorySingleton>,
     ) -> anyhow::Result<(Vec<TransferRow>, TaskCache)> {
         if self.pending_rows.is_empty() {
             return Ok(Default::default());
@@ -755,10 +757,7 @@ impl BlockIndexer {
             .into_iter()
             .map(|(k, _v)| k)
             .collect::<Vec<_>>();
-        let (task_results, intents_tokens) = tokio::try_join!(
-            rpc::fetch_from_rpc(client, &tasks, rpc_config),
-            rpc::fetch_intents_prices(client, rpc_config, self.block_timestamp, true)
-        )?;
+        let task_results = rpc::fetch_from_rpc(client, &tasks, rpc_config).await?;
         assert_eq!(
             task_results.len(),
             tasks.len(),
@@ -811,11 +810,12 @@ impl BlockIndexer {
             })
             .collect();
 
-        if let Some(intents_tokens) = intents_tokens {
-            let mut prices: HashMap<String, f64> = intents_tokens
-                .into_iter()
-                .map(|token| (token.asset_id, token.price))
-                .collect();
+        if let Some(price_history) = price_history.as_ref() {
+            let mut prices = price_history
+
+                .read()
+                .unwrap()
+                .get(self.block_timestamp);
             if let Some(near_price) = prices.get(ASSET_ID_WRAPPED_NEAR).cloned() {
                 for (asset_id, factor) in lst_prices {
                     prices.insert(asset_id, factor * near_price);
