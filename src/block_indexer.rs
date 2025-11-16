@@ -1,8 +1,8 @@
 use crate::types::*;
 
 use crate::pricing::PriceHistorySingleton;
+use crate::rpc;
 use crate::rpc::RpcConfig;
-use crate::{rpc, PROJECT_ID};
 use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
 use fastnear_primitives::near_indexer_primitives::types::{AccountId, BlockHeight};
 use fastnear_primitives::near_indexer_primitives::views::{
