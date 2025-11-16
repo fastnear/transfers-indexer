@@ -109,6 +109,12 @@ pub enum Task {
         #[derivative(Hash = "ignore")]
         block_hash: CryptoHash,
     },
+    CustomViewCall {
+        contract_id: AccountId,
+        method_name: String,
+        arguments: String,
+        block_hash: CryptoHash,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
@@ -131,6 +137,9 @@ pub enum TaskGroup {
     },
     Decimals {
         decimals: TaskIdOrValue<u8>,
+    },
+    LstPrice {
+        lst_price: TaskIdOrValue<U128>,
     },
 }
 
