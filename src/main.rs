@@ -1,6 +1,7 @@
 mod block_indexer;
 mod click;
 mod common;
+mod pricing;
 mod rpc;
 mod transfers;
 mod types;
@@ -8,6 +9,7 @@ mod types;
 use crate::click::*;
 use std::sync::Arc;
 
+use crate::pricing::PriceHistorySingleton;
 use crate::types::TransferType;
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
@@ -45,7 +47,9 @@ async fn main() {
         }
     });
 
-    common::setup_tracing("clickhouse=info,transfer-indexer=info,neardata-fetcher=info,rpc=info");
+    common::setup_tracing(
+        "clickhouse=info,transfer-indexer=info,neardata-fetcher=info,rpc=info,pricing-fetcher=info",
+    );
 
     tracing::log::info!(target: PROJECT_ID, "Starting Transfer Indexer");
 
@@ -113,6 +117,15 @@ async fn main() {
             tracing::log::info!(target: PROJECT_ID, "Nothing to do. The range is full.");
             return;
         }
+    }
+
+    // Stating intents pricing thread
+    if end_block_height.is_none() {
+        transfers_indexer.price_history = Some(pricing::start_fetcher(
+            is_running.clone(),
+            client.clone(),
+            transfers_indexer.rpc_config.clone(),
+        ));
     }
 
     let (sender, mut receiver) = mpsc::channel(100);

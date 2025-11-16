@@ -15,6 +15,7 @@ pub struct TransfersIndexer {
     pub task_cache: Option<TaskCache>,
     pub rpc_config: RpcConfig,
     pub client: Client,
+    pub price_history: Option<PriceHistorySingleton>,
 }
 
 impl TransfersIndexer {
@@ -31,6 +32,7 @@ impl TransfersIndexer {
             task_cache: None,
             rpc_config,
             client: Client::new(),
+            price_history: None,
         }
     }
 
@@ -92,7 +94,7 @@ impl TransfersIndexer {
 
         // Execute tasks and fill pending rows
         let (rows, task_cache) = block_indexer
-            .execute_tasks(&self.client, &self.rpc_config)
+            .execute_tasks(&self.client, &self.rpc_config, &self.price_history)
             .await?;
         self.rows.extend(rows);
         self.task_cache = Some(task_cache);
