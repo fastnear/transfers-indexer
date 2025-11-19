@@ -145,6 +145,8 @@ async fn main() {
         is_running.clone(),
     ));
 
+    let mut block_times = std::collections::VecDeque::with_capacity(1000);
+
     while let Some(block) = receiver.recv().await {
         if is_running.load(Ordering::SeqCst) {
             let block_height = block.block.header.height;
@@ -154,7 +156,50 @@ async fn main() {
                 .unwrap()
                 .as_nanos() as u64;
             let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
-            tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
+
+            block_times.push_back(std::time::Instant::now());
+            if block_times.len() > 1000 {
+                block_times.pop_front();
+            }
+
+            if let Some(end_block) = end_block_height {
+                let blocks_processed = block_times.len();
+                let elapsed = if blocks_processed > 1 {
+                    block_times
+                        .back()
+                        .unwrap()
+                        .duration_since(*block_times.front().unwrap())
+                        .as_secs_f64()
+                } else {
+                    0.0
+                };
+
+                let blocks_per_second = if elapsed > 0.0 {
+                    blocks_processed as f64 / elapsed
+                } else {
+                    0.0
+                };
+
+                let remaining_blocks = end_block.saturating_sub(block_height);
+                let eta_seconds = if blocks_per_second > 0.0 {
+                    remaining_blocks as f64 / blocks_per_second
+                } else {
+                    0.0
+                };
+
+                let eta_duration = std::time::Duration::from_secs(eta_seconds as u64);
+                let eta_string = humantime::format_duration(eta_duration).to_string();
+
+                tracing::log::info!(
+                    target: PROJECT_ID,
+                    "Processing block {}\tETA: {}\t{} blocks remaining",
+                    block_height,
+                    eta_string,
+                    remaining_blocks
+                );
+            } else {
+                tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
+            }
             transfers_indexer.process_block(&db, block).await.unwrap()
         }
     }

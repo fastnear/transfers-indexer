@@ -38,4 +38,5 @@ base64 = "0.22.1"
 signal-hook = "0.3.18"
 hashlink = "0.10.0"
 derivative = "2.2.0"
+humantime = "2.3.0"
 
