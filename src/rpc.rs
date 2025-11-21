@@ -2,13 +2,12 @@ use crate::types::*;
 use base64::prelude::*;
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use fastnear_primitives::near_primitives::serialize::dec_format;
+use futures::stream::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::task;
 
 const RPC_TIMEOUT: Duration = Duration::from_millis(5000);
 const TARGET_RPC: &str = "rpc";
@@ -154,36 +153,31 @@ pub async fn fetch_from_rpc(
     if tasks.is_empty() {
         return Ok(vec![]);
     }
-    let mut results: Vec<(TaskId, TaskResult)> = Vec::new();
     let start = std::time::Instant::now();
-    let (tx, mut rx) =
-        mpsc::channel::<Result<(TaskId, TaskResult), RpcError>>(rpc_config.concurrency);
     let rpcs = &rpc_config.rpcs;
     tracing::info!(target: TARGET_RPC, "Fetching {} tasks from RPC", tasks.len());
 
-    for (i, task) in tasks.iter().enumerate() {
-        let task_id = TaskId(i);
+    let futures = tasks.iter().enumerate().map(|(i, task)| {
         let client = client.clone();
-        let tx = tx.clone();
         let rpcs = rpcs.clone();
         let task = task.clone();
         let bearer_token = rpc_config.bearer_token.clone();
         let timeout = rpc_config.timeout;
         let num_iterations = rpc_config.num_iterations;
+        let task_id = TaskId(i);
 
-        // Spawn a new asynchronous task for each request
-        task::spawn(async move {
+        async move {
             let mut index = i;
             let mut iterations = num_iterations;
             let mut sleep = Duration::from_millis(100);
-            let res = loop {
+            loop {
                 let url = &rpcs[index % rpcs.len()];
                 index += 1;
                 let res = execute_task(&client, &url, &task, &bearer_token, timeout).await;
 
                 match res {
                     Ok(result) => {
-                        break Ok((task_id, result));
+                        return Ok((task_id, result));
                     }
                     Err(e) => {
                         if !matches!(e, RpcError::RetriableRpcError(_)) {
@@ -192,44 +186,48 @@ pub async fn fetch_from_rpc(
                         // Need to retry this task
                         iterations -= 1;
                         if iterations == 0 {
-                            break Err(e);
+                            return Err(e);
                         }
                         tokio::time::sleep(sleep).await;
                         sleep *= 2;
                     }
                 }
-            };
-            tx.send(res).await.expect("Failed to send task result");
-        });
-    }
-
-    // Close the sender to ensure the loop below exits once all tasks are completed
-    drop(tx);
-
-    let mut errors = Vec::new();
-    // Wait for all tasks to complete
-    while let Some(res) = rx.recv().await {
-        match res {
-            Ok(pair) => results.push(pair),
-            Err(e) => {
-                errors.push(e);
             }
         }
-    }
+    });
+
+    let mut results = futures::stream::iter(futures)
+        .buffer_unordered(rpc_config.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
     let duration = start.elapsed().as_millis();
 
     tracing::debug!(target: TARGET_RPC, "Query {}ms: fetch_from_rpc {} tasks",
         duration,
         tasks.len());
 
+    let mut final_results = Vec::with_capacity(results.len());
+    let mut errors = Vec::new();
+
+    for res in results.drain(..) {
+        match res {
+            Ok(pair) => final_results.push(pair),
+            Err(e) => errors.push(e),
+        }
+    }
+
     if let Some(err) = errors.pop() {
         return Err(err);
     }
 
-    results.sort_by_key(|(task_id, _)| *task_id);
-    let results: Vec<TaskResult> = results.into_iter().map(|(_, result)| result).collect();
+    final_results.sort_by_key(|(task_id, _)| *task_id);
+    let final_results: Vec<TaskResult> = final_results
+        .into_iter()
+        .map(|(_, result)| result)
+        .collect();
 
-    Ok(results)
+    Ok(final_results)
 }
 
 async fn execute_task(
@@ -403,7 +401,6 @@ pub async fn fetch_intents_prices(
     rpc_config: &RpcConfig,
     ignore_errors: bool,
 ) -> Result<Option<Vec<IntentsTokenResponse>>, RpcError> {
-
     match fetch_intents_prices_internal(client, rpc_config).await {
         Ok(res) => Ok(Some(res)),
         Err(e) => {
