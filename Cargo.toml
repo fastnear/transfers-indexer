@@ -1,6 +1,6 @@
 [package]
 name = "transfers-indexer"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Eugene The Dream"]
 rust-version = "1.86.0"
 edition = "2021"
@@ -39,4 +39,5 @@ signal-hook = "0.3.18"
 hashlink = "0.10.0"
 derivative = "2.2.0"
 humantime = "2.3.0"
+futures = "0.3.31"
 
