@@ -3,6 +3,7 @@ use base64::prelude::*;
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use fastnear_primitives::near_primitives::serialize::dec_format;
 use futures::stream::StreamExt;
+use futures::TryStreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -164,7 +165,6 @@ pub async fn fetch_from_rpc(
         let bearer_token = rpc_config.bearer_token.clone();
         let timeout = rpc_config.timeout;
         let num_iterations = rpc_config.num_iterations;
-        let task_id = TaskId(i);
 
         async move {
             let mut index = i;
@@ -177,7 +177,7 @@ pub async fn fetch_from_rpc(
 
                 match res {
                     Ok(result) => {
-                        return Ok((task_id, result));
+                        return Ok(result);
                     }
                     Err(e) => {
                         if !matches!(e, RpcError::RetriableRpcError(_)) {
@@ -196,10 +196,10 @@ pub async fn fetch_from_rpc(
         }
     });
 
-    let mut results = futures::stream::iter(futures)
-        .buffer_unordered(rpc_config.concurrency)
-        .collect::<Vec<_>>()
-        .await;
+    let results = futures::stream::iter(futures)
+        .buffered(rpc_config.concurrency)
+        .try_collect::<Vec<_>>()
+        .await?;
 
     let duration = start.elapsed().as_millis();
 
@@ -207,27 +207,7 @@ pub async fn fetch_from_rpc(
         duration,
         tasks.len());
 
-    let mut final_results = Vec::with_capacity(results.len());
-    let mut errors = Vec::new();
-
-    for res in results.drain(..) {
-        match res {
-            Ok(pair) => final_results.push(pair),
-            Err(e) => errors.push(e),
-        }
-    }
-
-    if let Some(err) = errors.pop() {
-        return Err(err);
-    }
-
-    final_results.sort_by_key(|(task_id, _)| *task_id);
-    let final_results: Vec<TaskResult> = final_results
-        .into_iter()
-        .map(|(_, result)| result)
-        .collect();
-
-    Ok(final_results)
+    Ok(results)
 }
 
 async fn execute_task(
