@@ -207,5 +207,14 @@ async fn main() {
     transfers_indexer.commit(&db).await.unwrap();
     transfers_indexer.flush().await.unwrap();
 
+    if let Some(price_history) = transfers_indexer.price_history {
+        let price_history = price_history.read().unwrap();
+        if let Err(e) = price_history.save_to_file("res/price_history.json") {
+            tracing::error!(target: PROJECT_ID, "Failed to save price history: {}", e);
+        } else {
+            tracing::info!(target: PROJECT_ID, "Saved price history to res/price_history.json");
+        }
+    }
+
     tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
 }
