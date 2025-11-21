@@ -175,7 +175,7 @@ async fn main() {
                 };
 
                 let blocks_per_second = if elapsed > 0.0 {
-                    blocks_processed as f64 / elapsed
+                    (blocks_processed - 1) as f64 / elapsed
                 } else {
                     0.0
                 };
