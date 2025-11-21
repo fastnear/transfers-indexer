@@ -4,12 +4,18 @@ use reqwest::Client;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
+
 const PROJECT_ID: &str = "pricing-fetcher";
 const MAX_HISTORY_LEN: usize = 2 * 60 * 60; // About 1 hour of data at 500ms intervals
 
 pub type PriceHistorySingleton = Arc<RwLock<PriceHistory>>;
 pub type Prices = HashMap<String, f64>;
 
+#[derive(Serialize, Deserialize)]
 pub struct PriceHistory {
     pub history: BTreeMap<u64, Prices>,
 }
@@ -23,6 +29,23 @@ impl PriceHistory {
             .map(|(_, prices)| prices.clone())
             .unwrap_or_default()
     }
+
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        if let Some(parent) = Path::new(path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = File::create(path)?;
+        let writer = BufWriter::new(file);
+        serde_json::to_writer(writer, self)?;
+        Ok(())
+    }
+
+    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let history = serde_json::from_reader(reader)?;
+        Ok(history)
+    }
 }
 
 pub fn start_fetcher(
@@ -30,9 +53,14 @@ pub fn start_fetcher(
     client: Client,
     rpc_config: RpcConfig,
 ) -> PriceHistorySingleton {
-    let price_history_singleton = Arc::new(RwLock::new(PriceHistory {
-        history: BTreeMap::new(),
-    }));
+    let price_history =
+        PriceHistory::load_from_file("res/price_history.json").unwrap_or_else(|e| {
+            tracing::warn!(target: PROJECT_ID, "Failed to load price history: {}", e);
+            PriceHistory {
+                history: BTreeMap::new(),
+            }
+        });
+    let price_history_singleton = Arc::new(RwLock::new(price_history));
     let res = price_history_singleton.clone();
 
     tokio::spawn(async move {
