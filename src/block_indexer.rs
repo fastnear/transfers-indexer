@@ -584,8 +584,7 @@ impl BlockIndexer {
                             };
 
                             match action {
-                                ActionView::Transfer { deposit }
-                                | ActionView::DeterministicStateInit { deposit, .. } => {
+                                ActionView::Transfer { deposit } => {
                                     if !has_transfer_type(&TransferType::NativeTransfer) {
                                         continue;
                                     }
@@ -594,6 +593,23 @@ impl BlockIndexer {
                                     row.transfer_type = TransferType::NativeTransfer.to_string();
                                     row.transfer_index = transfer_index
                                         + TransferType::NativeTransfer.transfer_index_offset();
+                                    self.add_pending_row_native_near(
+                                        row,
+                                        Some(&predecessor_id),
+                                        Some(&account_id),
+                                    );
+                                }
+                                ActionView::DeterministicStateInit { deposit, .. } => {
+                                    if !has_transfer_type(&TransferType::DeterministicStateInit) {
+                                        continue;
+                                    }
+
+                                    row.amount = deposit.as_yoctonear();
+                                    row.transfer_type =
+                                        TransferType::DeterministicStateInit.to_string();
+                                    row.transfer_index = transfer_index
+                                        + TransferType::DeterministicStateInit
+                                            .transfer_index_offset();
                                     self.add_pending_row_native_near(
                                         row,
                                         Some(&predecessor_id),

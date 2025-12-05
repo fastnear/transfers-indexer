@@ -13,6 +13,7 @@ pub const TRANSFER_MULTIPLIER: u32 = 10000;
 pub enum TransferType {
     NativeTransfer,
     AttachedDeposit,
+    DeterministicStateInit,
     FtTransfer,
     WrappedNear,
     MtTransfer,
@@ -44,6 +45,7 @@ impl TransferType {
         match self {
             TransferType::NativeTransfer => TRANSFER_MULTIPLIER - 1,
             TransferType::AttachedDeposit => TRANSFER_MULTIPLIER - 2,
+            TransferType::DeterministicStateInit => TRANSFER_MULTIPLIER - 3,
             TransferType::FtTransfer => 0,
             TransferType::WrappedNear => 0,
             TransferType::MtTransfer => 0,
