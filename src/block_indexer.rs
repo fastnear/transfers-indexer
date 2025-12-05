@@ -584,7 +584,8 @@ impl BlockIndexer {
                             };
 
                             match action {
-                                ActionView::Transfer { deposit } => {
+                                ActionView::Transfer { deposit }
+                                | ActionView::DeterministicStateInit { deposit, .. } => {
                                     if !has_transfer_type(&TransferType::NativeTransfer) {
                                         continue;
                                     }
