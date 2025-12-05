@@ -589,7 +589,7 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    row.amount = deposit;
+                                    row.amount = deposit.as_yoctonear();
                                     row.transfer_type = TransferType::NativeTransfer.to_string();
                                     row.transfer_index = transfer_index
                                         + TransferType::NativeTransfer.transfer_index_offset();
@@ -607,13 +607,13 @@ impl BlockIndexer {
                                 } => {
                                     row.method_name = Some(method_name.to_string());
                                     // Ignore yoctoNEAR deposits
-                                    if deposit > 1
+                                    if deposit.as_yoctonear() > 1
                                         && has_transfer_type(&TransferType::AttachedDeposit)
                                     {
                                         let mut row = row.clone();
                                         row.transfer_index = transfer_index
                                             + TransferType::AttachedDeposit.transfer_index_offset();
-                                        row.amount = deposit;
+                                        row.amount = deposit.as_yoctonear();
                                         row.transfer_type =
                                             TransferType::AttachedDeposit.to_string();
                                         self.add_pending_row_native_near(
@@ -693,7 +693,7 @@ impl BlockIndexer {
                                                 contract_id: account_id.clone(),
                                                 sender_id: None,
                                                 receiver_id: Some(predecessor_id.clone()),
-                                                amount: deposit,
+                                                amount: deposit.as_yoctonear(),
                                             };
                                             if add_transfer((&ft_transfer).into(), false) {
                                                 self.add_pending_row_ft(
@@ -811,11 +811,7 @@ impl BlockIndexer {
             .collect();
 
         if let Some(price_history) = price_history.as_ref() {
-            let mut prices = price_history
-
-                .read()
-                .unwrap()
-                .get(self.block_timestamp);
+            let mut prices = price_history.read().unwrap().get(self.block_timestamp);
             if let Some(near_price) = prices.get(ASSET_ID_WRAPPED_NEAR).cloned() {
                 for (asset_id, factor) in lst_prices {
                     prices.insert(asset_id, factor * near_price);
