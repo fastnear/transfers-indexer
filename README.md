@@ -47,6 +47,7 @@ CREATE TABLE account_transfers
     end_of_block_balance   Nullable(UInt128) COMMENT 'The sender account balance at the end of the block in token units',
 
     INDEX block_height_minmax_idx block_height TYPE minmax GRANULARITY 1,
+    INDEX block_timestamp_minmax_idx block_timestamp TYPE minmax GRANULARITY 1,
     INDEX receipt_account_id_bloom_index receipt_account_id TYPE bloom_filter() GRANULARITY 1,
     INDEX asset_id_bloom_index asset_id TYPE bloom_filter() GRANULARITY 1,
     INDEX other_account_id_bloom_index other_account_id TYPE bloom_filter() GRANULARITY 1
