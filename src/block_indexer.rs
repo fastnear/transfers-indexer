@@ -84,100 +84,72 @@ impl BlockIndexer {
         }
     }
 
-    pub fn add_pending_row_native_near(
-        &mut self,
-        mut row: TransferRow,
-        sender_id: Option<&AccountId>,
-        receiver_id: Option<&AccountId>,
-    ) {
-        row.asset_id = ASSET_ID_NATIVE_NEAR.to_string();
+    fn add_pending_row_native_near_internal(&mut self, mut row: TransferRow) {
         row.human_amount = Some(row.amount as f64 / NEAR_BASE_FACTOR);
-        row.sender_id = sender_id.map(|id| id.to_string());
-        row.receiver_id = receiver_id.map(|id| id.to_string());
-        row.asset_type = AssetType::Near.to_string();
+        let account_id: AccountId = row.account_id.parse().unwrap();
         let pending_row = PendingRow {
-            row,
             task_groups: vec![TaskGroup::BlockBalances {
-                sender_start_of_block_balance: sender_id.map(|a| {
-                    self.task(Task::AccountBalance {
-                        account_id: a.clone(),
-                        block_hash: self.previous_block_hash,
-                    })
+                start_of_block_balance: self.task(Task::AccountBalance {
+                    account_id: account_id.clone(),
+                    block_hash: self.previous_block_hash,
                 }),
-                sender_end_of_block_balance: sender_id.map(|a| {
-                    self.task(Task::AccountBalance {
-                        account_id: a.clone(),
-                        block_hash: self.block_hash,
-                    })
-                }),
-                receiver_start_of_block_balance: receiver_id.map(|a| {
-                    self.task(Task::AccountBalance {
-                        account_id: a.clone(),
-                        block_hash: self.previous_block_hash,
-                    })
-                }),
-                receiver_end_of_block_balance: receiver_id.map(|a| {
-                    self.task(Task::AccountBalance {
-                        account_id: a.clone(),
-                        block_hash: self.block_hash,
-                    })
+                end_of_block_balance: self.task(Task::AccountBalance {
+                    account_id,
+                    block_hash: self.block_hash,
                 }),
             }],
+            row,
         };
         self.pending_rows.push(pending_row);
     }
 
-    pub fn add_pending_row_ft(
+    pub fn add_pending_row_native_near(
         &mut self,
         mut row: TransferRow,
-        ft_transfer: FtTransfer,
-        transfer_type: Option<TransferType>,
+        amount: u128,
+        sender_id: Option<&AccountId>,
+        receiver_id: Option<&AccountId>,
     ) {
-        row.asset_id = asset_id_from_ft(&ft_transfer.contract_id);
-        row.sender_id = ft_transfer.sender_id.as_ref().map(|id| id.to_string());
-        row.receiver_id = ft_transfer.receiver_id.as_ref().map(|id| id.to_string());
-        row.amount = ft_transfer.amount;
-        row.transfer_type = transfer_type
-            .unwrap_or(TransferType::FtTransfer)
-            .to_string();
-        row.asset_type = AssetType::Ft.to_string();
+        row.asset_id = ASSET_ID_NATIVE_NEAR.to_string();
+        row.asset_type = AssetType::Near.to_string();
+        row.amount = amount.min(i128::MAX as u128) as i128;
+        if sender_id != receiver_id {
+            if let Some(sender_id) = sender_id {
+                let mut row = row.clone();
+                row.amount = -row.amount;
+                row.account_id = sender_id.to_string();
+                row.other_account_id = receiver_id.map(|id| id.to_string());
+                self.add_pending_row_native_near_internal(row);
+            }
+        }
+        if let Some(receiver_id) = receiver_id {
+            row.account_id = receiver_id.to_string();
+            row.other_account_id = sender_id.map(|id| id.to_string());
+            self.add_pending_row_native_near_internal(row);
+        }
+    }
+
+    fn add_pending_row_ft_internal(&mut self, row: TransferRow, contract_id: &AccountId) {
+        let account_id: AccountId = row.account_id.parse().unwrap();
         let mut pending_row = PendingRow {
             row,
             task_groups: vec![
                 TaskGroup::Decimals {
                     decimals: self.task(Task::FtDecimals {
-                        contract_id: ft_transfer.contract_id.clone(),
+                        contract_id: contract_id.clone(),
                         block_hash: self.block_hash,
                     }),
                 },
                 TaskGroup::BlockBalances {
-                    sender_start_of_block_balance: ft_transfer.sender_id.as_ref().map(|a| {
-                        self.task(Task::FtBalance {
-                            contract_id: ft_transfer.contract_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.previous_block_hash,
-                        })
+                    start_of_block_balance: self.task(Task::FtBalance {
+                        contract_id: contract_id.clone(),
+                        account_id: account_id.clone(),
+                        block_hash: self.previous_block_hash,
                     }),
-                    sender_end_of_block_balance: ft_transfer.sender_id.as_ref().map(|a| {
-                        self.task(Task::FtBalance {
-                            contract_id: ft_transfer.contract_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.block_hash,
-                        })
-                    }),
-                    receiver_start_of_block_balance: ft_transfer.receiver_id.as_ref().map(|a| {
-                        self.task(Task::FtBalance {
-                            contract_id: ft_transfer.contract_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.previous_block_hash,
-                        })
-                    }),
-                    receiver_end_of_block_balance: ft_transfer.receiver_id.as_ref().map(|a| {
-                        self.task(Task::FtBalance {
-                            contract_id: ft_transfer.contract_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.block_hash,
-                        })
+                    end_of_block_balance: self.task(Task::FtBalance {
+                        contract_id: contract_id.clone(),
+                        account_id,
+                        block_hash: self.block_hash,
                     }),
                 },
             ],
@@ -189,6 +161,35 @@ impl BlockIndexer {
         }
 
         self.pending_rows.push(pending_row);
+    }
+
+    pub fn add_pending_row_ft(
+        &mut self,
+        mut row: TransferRow,
+        ft_transfer: FtTransfer,
+        transfer_type: Option<TransferType>,
+    ) {
+        row.asset_id = asset_id_from_ft(&ft_transfer.contract_id);
+        row.transfer_type = transfer_type
+            .unwrap_or(TransferType::FtTransfer)
+            .to_string();
+        row.asset_type = AssetType::Ft.to_string();
+        row.amount = ft_transfer.amount.min(i128::MAX as u128) as i128;
+
+        if ft_transfer.sender_id != ft_transfer.receiver_id {
+            if let Some(sender_id) = &ft_transfer.sender_id {
+                let mut row = row.clone();
+                row.amount = -row.amount;
+                row.account_id = sender_id.to_string();
+                row.other_account_id = ft_transfer.receiver_id.as_ref().map(|id| id.to_string());
+                self.add_pending_row_ft_internal(row, &ft_transfer.contract_id);
+            }
+        }
+        if let Some(receiver_id) = ft_transfer.receiver_id {
+            row.account_id = receiver_id.to_string();
+            row.other_account_id = ft_transfer.sender_id.map(|id| id.to_string());
+            self.add_pending_row_ft_internal(row, &ft_transfer.contract_id);
+        }
     }
 
     fn get_custom_price_task(&mut self, asset_id: &str) -> Option<Task> {
@@ -251,57 +252,24 @@ impl BlockIndexer {
         }
     }
 
-    pub fn add_pending_row_mt(
-        &mut self,
-        mut row: TransferRow,
-        mt_transfer: MtTransfer,
-        transfer_type: Option<TransferType>,
-    ) {
-        row.asset_id = asset_id_from_mt(&mt_transfer.contract_id, &mt_transfer.token_id);
-        row.sender_id = mt_transfer.sender_id.as_ref().map(|id| id.to_string());
-        row.receiver_id = mt_transfer.receiver_id.as_ref().map(|id| id.to_string());
-        row.amount = mt_transfer.amount;
-        row.transfer_type = transfer_type
-            .unwrap_or(TransferType::MtTransfer)
-            .to_string();
-        row.asset_type = AssetType::Mt.to_string();
-
+    fn add_pending_row_mt_internal(&mut self, row: TransferRow, mt_transfer: &MtTransfer) {
+        let account_id: AccountId = row.account_id.parse().unwrap();
         let mut pending_row = PendingRow {
             row,
             task_groups: vec![
                 self.mt_decimal_task(&mt_transfer),
                 TaskGroup::BlockBalances {
-                    sender_start_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
-                        self.task(Task::MtBalance {
-                            contract_id: mt_transfer.contract_id.clone(),
-                            token_id: mt_transfer.token_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.previous_block_hash,
-                        })
+                    start_of_block_balance: self.task(Task::MtBalance {
+                        contract_id: mt_transfer.contract_id.clone(),
+                        token_id: mt_transfer.token_id.clone(),
+                        account_id: account_id.clone(),
+                        block_hash: self.previous_block_hash,
                     }),
-                    sender_end_of_block_balance: mt_transfer.sender_id.as_ref().map(|a| {
-                        self.task(Task::MtBalance {
-                            contract_id: mt_transfer.contract_id.clone(),
-                            token_id: mt_transfer.token_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.block_hash,
-                        })
-                    }),
-                    receiver_start_of_block_balance: mt_transfer.receiver_id.as_ref().map(|a| {
-                        self.task(Task::MtBalance {
-                            contract_id: mt_transfer.contract_id.clone(),
-                            token_id: mt_transfer.token_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.previous_block_hash,
-                        })
-                    }),
-                    receiver_end_of_block_balance: mt_transfer.receiver_id.as_ref().map(|a| {
-                        self.task(Task::MtBalance {
-                            contract_id: mt_transfer.contract_id.clone(),
-                            token_id: mt_transfer.token_id.clone(),
-                            account_id: a.clone(),
-                            block_hash: self.block_hash,
-                        })
+                    end_of_block_balance: self.task(Task::MtBalance {
+                        contract_id: mt_transfer.contract_id.clone(),
+                        token_id: mt_transfer.token_id.clone(),
+                        account_id,
+                        block_hash: self.block_hash,
                     }),
                 },
             ],
@@ -315,6 +283,35 @@ impl BlockIndexer {
         }
 
         self.pending_rows.push(pending_row);
+    }
+
+    pub fn add_pending_row_mt(
+        &mut self,
+        mut row: TransferRow,
+        mt_transfer: MtTransfer,
+        transfer_type: Option<TransferType>,
+    ) {
+        row.asset_id = asset_id_from_mt(&mt_transfer.contract_id, &mt_transfer.token_id);
+        row.transfer_type = transfer_type
+            .unwrap_or(TransferType::MtTransfer)
+            .to_string();
+        row.asset_type = AssetType::Mt.to_string();
+        row.amount = mt_transfer.amount.min(i128::MAX as u128) as i128;
+
+        if mt_transfer.sender_id != mt_transfer.receiver_id {
+            if let Some(sender_id) = &mt_transfer.sender_id {
+                let mut row = row.clone();
+                row.amount = -row.amount;
+                row.account_id = sender_id.to_string();
+                row.other_account_id = mt_transfer.receiver_id.as_ref().map(|id| id.to_string());
+                self.add_pending_row_mt_internal(row, &mt_transfer);
+            }
+        }
+        if let Some(receiver_id) = &mt_transfer.receiver_id {
+            row.account_id = receiver_id.to_string();
+            row.other_account_id = mt_transfer.sender_id.as_ref().map(|id| id.to_string());
+            self.add_pending_row_mt_internal(row, &mt_transfer);
+        }
     }
 
     pub fn process_block(
@@ -341,7 +338,7 @@ impl BlockIndexer {
                 let transaction_id = reo.tx_hash;
                 let receipt_id = reo.receipt.receipt_id;
                 let predecessor_id = reo.receipt.predecessor_id;
-                let account_id = reo.receipt.receiver_id;
+                let receipt_account_id = reo.receipt.receiver_id;
                 let status = reo.execution_outcome.outcome.status;
                 match reo.receipt.receipt {
                     ReceiptEnumView::Action {
@@ -410,9 +407,9 @@ impl BlockIndexer {
                                 transfer_index,
                                 signer_id: signer_id.to_string(),
                                 predecessor_id: predecessor_id.to_string(),
-                                account_id: account_id.to_string(),
-                                sender_id: None,
-                                receiver_id: None,
+                                receipt_account_id: receipt_account_id.to_string(),
+                                account_id: "".to_string(),
+                                other_account_id: None,
                                 asset_id: "".to_string(),
                                 asset_type: "".to_string(),
                                 amount: 0,
@@ -420,10 +417,8 @@ impl BlockIndexer {
                                 transfer_type: "".to_string(),
                                 human_amount: None,
                                 usd_amount: None,
-                                sender_start_of_block_balance: None,
-                                sender_end_of_block_balance: None,
-                                receiver_start_of_block_balance: None,
-                                receiver_end_of_block_balance: None,
+                                start_of_block_balance: None,
+                                end_of_block_balance: None,
                             };
 
                             if event.standard == EVENT_STANDARD_FT
@@ -439,7 +434,7 @@ impl BlockIndexer {
                                                 Err(_) => continue,
                                             };
                                         let ft_transfer = FtTransfer {
-                                            contract_id: account_id.clone(),
+                                            contract_id: receipt_account_id.clone(),
                                             sender_id: Some(data.old_owner_id.clone()),
                                             receiver_id: Some(data.new_owner_id.clone()),
                                             amount: data.amount,
@@ -467,7 +462,7 @@ impl BlockIndexer {
                                                 (Some(data.owner_id), None)
                                             };
                                         let ft_transfer = FtTransfer {
-                                            contract_id: account_id.clone(),
+                                            contract_id: receipt_account_id.clone(),
                                             sender_id,
                                             receiver_id,
                                             amount: data.amount,
@@ -500,7 +495,7 @@ impl BlockIndexer {
                                             row.transfer_index = transfer_index;
                                             transfer_index += 1;
                                             let mt_transfer = MtTransfer {
-                                                contract_id: account_id.clone(),
+                                                contract_id: receipt_account_id.clone(),
                                                 token_id,
                                                 sender_id: Some(data.old_owner_id.clone()),
                                                 receiver_id: Some(data.new_owner_id.clone()),
@@ -537,7 +532,7 @@ impl BlockIndexer {
                                             row.transfer_index = transfer_index;
                                             transfer_index += 1;
                                             let mt_transfer = MtTransfer {
-                                                contract_id: account_id.clone(),
+                                                contract_id: receipt_account_id.clone(),
                                                 token_id,
                                                 sender_id: sender_id.clone(),
                                                 receiver_id: receiver_id.clone(),
@@ -567,9 +562,9 @@ impl BlockIndexer {
                                 transfer_index,
                                 signer_id: signer_id.to_string(),
                                 predecessor_id: predecessor_id.to_string(),
-                                account_id: account_id.to_string(),
-                                sender_id: None,
-                                receiver_id: None,
+                                receipt_account_id: receipt_account_id.to_string(),
+                                account_id: "".to_string(),
+                                other_account_id: None,
                                 asset_id: "".to_string(),
                                 asset_type: "".to_string(),
                                 amount: 0,
@@ -577,10 +572,8 @@ impl BlockIndexer {
                                 transfer_type: "".to_string(),
                                 human_amount: None,
                                 usd_amount: None,
-                                sender_start_of_block_balance: None,
-                                sender_end_of_block_balance: None,
-                                receiver_start_of_block_balance: None,
-                                receiver_end_of_block_balance: None,
+                                start_of_block_balance: None,
+                                end_of_block_balance: None,
                             };
 
                             match action {
@@ -589,14 +582,15 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    row.amount = deposit.as_yoctonear();
+                                    let amount = deposit.as_yoctonear();
                                     row.transfer_type = TransferType::NativeTransfer.to_string();
                                     row.transfer_index = transfer_index
                                         + TransferType::NativeTransfer.transfer_index_offset();
                                     self.add_pending_row_native_near(
                                         row,
+                                        amount,
                                         Some(&predecessor_id),
-                                        Some(&account_id),
+                                        Some(&receipt_account_id),
                                     );
                                 }
                                 ActionView::DeterministicStateInit { deposit, .. } => {
@@ -604,7 +598,7 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    row.amount = deposit.as_yoctonear();
+                                    let amount = deposit.as_yoctonear();
                                     row.transfer_type =
                                         TransferType::DeterministicStateInit.to_string();
                                     row.transfer_index = transfer_index
@@ -612,8 +606,9 @@ impl BlockIndexer {
                                             .transfer_index_offset();
                                     self.add_pending_row_native_near(
                                         row,
+                                        amount,
                                         Some(&predecessor_id),
-                                        Some(&account_id),
+                                        Some(&receipt_account_id),
                                     );
                                 }
                                 ActionView::FunctionCall {
@@ -630,13 +625,14 @@ impl BlockIndexer {
                                         let mut row = row.clone();
                                         row.transfer_index = transfer_index
                                             + TransferType::AttachedDeposit.transfer_index_offset();
-                                        row.amount = deposit.as_yoctonear();
+                                        let amount = deposit.as_yoctonear();
                                         row.transfer_type =
                                             TransferType::AttachedDeposit.to_string();
                                         self.add_pending_row_native_near(
                                             row,
+                                            amount,
                                             Some(&predecessor_id),
-                                            Some(&account_id),
+                                            Some(&receipt_account_id),
                                         );
                                     }
 
@@ -651,7 +647,7 @@ impl BlockIndexer {
                                         let args = args.unwrap();
 
                                         let ft_transfer = FtTransfer {
-                                            contract_id: account_id.clone(),
+                                            contract_id: receipt_account_id.clone(),
                                             sender_id: Some(predecessor_id.clone()),
                                             receiver_id: Some(args.receiver_id),
                                             amount: args.amount,
@@ -691,7 +687,7 @@ impl BlockIndexer {
                                         }
 
                                         let ft_transfer = FtTransfer {
-                                            contract_id: account_id.clone(),
+                                            contract_id: receipt_account_id.clone(),
                                             sender_id: Some(args.receiver_id),
                                             receiver_id: Some(args.sender_id),
                                             amount: refund_amount,
@@ -702,12 +698,12 @@ impl BlockIndexer {
                                         continue;
                                     }
 
-                                    if (account_id.as_str() == ACCOUNT_ID_WRAPPED)
+                                    if (receipt_account_id.as_str() == ACCOUNT_ID_WRAPPED)
                                         && has_transfer_type(&TransferType::WrappedNear)
                                     {
                                         if method_name == "near_deposit" {
                                             let ft_transfer = FtTransfer {
-                                                contract_id: account_id.clone(),
+                                                contract_id: receipt_account_id.clone(),
                                                 sender_id: None,
                                                 receiver_id: Some(predecessor_id.clone()),
                                                 amount: deposit.as_yoctonear(),
@@ -731,7 +727,7 @@ impl BlockIndexer {
                                             let args = args.unwrap();
 
                                             let ft_transfer = FtTransfer {
-                                                contract_id: account_id.clone(),
+                                                contract_id: receipt_account_id.clone(),
                                                 sender_id: Some(predecessor_id.clone()),
                                                 receiver_id: None,
                                                 amount: args.amount,
@@ -791,22 +787,14 @@ impl BlockIndexer {
                 for task_group in pending_row.task_groups {
                     match task_group {
                         TaskGroup::BlockBalances {
-                            sender_start_of_block_balance,
-                            sender_end_of_block_balance,
-                            receiver_start_of_block_balance,
-                            receiver_end_of_block_balance,
+                            start_of_block_balance,
+                            end_of_block_balance,
                         } => {
-                            row.sender_start_of_block_balance =
-                                resolve_task(&task_results, sender_start_of_block_balance)
+                            row.start_of_block_balance =
+                                resolve_task(&task_results, Some(start_of_block_balance))
                                     .map(|v| v.0);
-                            row.sender_end_of_block_balance =
-                                resolve_task(&task_results, sender_end_of_block_balance)
-                                    .map(|v| v.0);
-                            row.receiver_start_of_block_balance =
-                                resolve_task(&task_results, receiver_start_of_block_balance)
-                                    .map(|v| v.0);
-                            row.receiver_end_of_block_balance =
-                                resolve_task(&task_results, receiver_end_of_block_balance)
+                            row.end_of_block_balance =
+                                resolve_task(&task_results, Some(end_of_block_balance))
                                     .map(|v| v.0);
                         }
                         TaskGroup::Decimals { decimals } => {
