@@ -19,7 +19,7 @@ RPC_NUM_ITERATIONS=10
 
 ### Create clickhouse tables
 
-For generic action view:
+Transfers table:
 
 ```clickhouse
 CREATE TABLE transfers
