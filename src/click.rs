@@ -1,9 +1,9 @@
 use clickhouse::{Client, Row};
+use serde::Serialize;
 use std::env;
 
-use serde::Serialize;
-
 use fastnear_primitives::near_primitives::types::BlockHeight;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 pub const CLICKHOUSE_TARGET: &str = "clickhouse";
@@ -13,13 +13,15 @@ pub const MAX_COMMIT_HANDLERS: usize = 3;
 #[derive(Clone)]
 pub struct ClickDB {
     pub client: Client,
+    pub prefix: String,
     pub min_batch: usize,
 }
 
 impl ClickDB {
-    pub fn new(min_batch: usize) -> Self {
+    pub fn new(min_batch: usize, prefix: &str) -> Self {
         Self {
-            client: establish_connection(),
+            prefix: prefix.to_string(),
+            client: establish_connection(prefix),
             min_batch,
         }
     }
@@ -45,14 +47,22 @@ impl ClickDB {
         self.client.query("SELECT 1").execute().await?;
         Ok(())
     }
+
+    pub async fn read_rows<T>(&self, query: &str) -> clickhouse::error::Result<Vec<T>>
+    where
+        T: Row + DeserializeOwned,
+    {
+        let rows = self.client.query(query).fetch_all::<T>().await?;
+        Ok(rows)
+    }
 }
 
-fn establish_connection() -> Client {
+fn establish_connection(prefix: &str) -> Client {
     Client::default()
-        .with_url(env::var("DATABASE_URL").unwrap())
-        .with_user(env::var("DATABASE_USER").unwrap())
-        .with_password(env::var("DATABASE_PASSWORD").unwrap())
-        .with_database(env::var("DATABASE_DATABASE").unwrap())
+        .with_url(env::var(format!("{prefix}DATABASE_URL")).unwrap())
+        .with_user(env::var(format!("{prefix}DATABASE_USER")).unwrap())
+        .with_password(env::var(format!("{prefix}DATABASE_PASSWORD")).unwrap())
+        .with_database(env::var(format!("{prefix}DATABASE_DATABASE")).unwrap())
 }
 
 pub async fn insert_rows_with_retry<T>(

@@ -1,19 +1,14 @@
-mod block_indexer;
 mod click;
 mod common;
-mod pricing;
-mod rpc;
-mod transfers;
+
 mod types;
 
 use crate::click::*;
 use std::sync::Arc;
 
-use crate::pricing::PriceHistorySingleton;
-use crate::types::TransferType;
+use crate::types::*;
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
-use fastnear_primitives::block_with_tx_hash::*;
 use fastnear_primitives::near_indexer_primitives::types::BlockHeight;
 use fastnear_primitives::types::ChainId;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,19 +48,21 @@ async fn main() {
 
     tracing::log::info!(target: PROJECT_ID, "Starting Transfer Indexer");
 
-    let db = ClickDB::new(10000);
-    db.verify_connection()
+    let legacy_db = ClickDB::new(10000, "LEGACY_");
+    legacy_db
+        .verify_connection()
         .await
-        .expect("Failed to connect to Clickhouse");
+        .expect("Failed to connect to Legacy Clickhouse");
+
+    let new_db = ClickDB::new(100000, "NEW_");
+    new_db
+        .verify_connection()
+        .await
+        .expect("Failed to connect to New Clickhouse");
 
     let client = reqwest::Client::new();
     let chain_id = ChainId::try_from(std::env::var("CHAIN_ID").expect("CHAIN_ID is not set"))
         .expect("Invalid chain id");
-    let num_threads = std::env::var("NUM_FETCHING_THREADS")
-        .expect("NUM_FETCHING_THREADS is not set")
-        .parse::<u64>()
-        .expect("Invalid NUM_FETCHING_THREADS");
-    let auth_bearer_token = std::env::var("AUTH_BEARER_TOKEN").ok();
 
     let first_block_height = fetcher::fetch_first_block(&client, chain_id)
         .await
@@ -77,34 +74,20 @@ async fn main() {
     tracing::log::info!(target: PROJECT_ID, "First block: {}", first_block_height);
 
     let args: Vec<String> = std::env::args().collect();
-    let transfer_types_str = args.get(1).expect("Command is not specified");
-    let transfer_types = if transfer_types_str.to_lowercase() == "all" {
-        None
-    } else {
-        Some(
-            transfer_types_str
-                .split(',')
-                .map(|s| {
-                    serde_json::from_str::<TransferType>(&format!("\"{s}\""))
-                        .map_err(|err| format!("Invalid transfer type `{s}`: {:?}", err))
-                        .unwrap()
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
 
     let start_block_height: Option<BlockHeight> = args
-        .get(2)
+        .get(1)
         .map(|v| v.parse().expect("Failed to parse backfill block height"));
 
     let end_block_height: Option<BlockHeight> = args
-        .get(3)
+        .get(2)
         .map(|v| v.parse().expect("Failed to parse end block height"));
 
-    let mut transfers_indexer = transfers::TransfersIndexer::new(transfer_types.as_deref());
+    let mut transfers_indexer = TransfersIndexer::new("account_transfers");
+
     let db_last_block_height = transfers_indexer
         .last_block_in_range(
-            &db,
+            &new_db,
             start_block_height.unwrap_or(0),
             end_block_height.unwrap_or(10u64.pow(15)),
         )
@@ -119,102 +102,279 @@ async fn main() {
         }
     }
 
-    // Starting intents pricing thread
-    if end_block_height.is_none() {
-        transfers_indexer.price_history = Some(pricing::start_fetcher(
-            is_running.clone(),
-            client.clone(),
-            transfers_indexer.rpc_config.clone(),
-        ));
-    }
+    // Legacy transfer rows
+    let (sender, mut receiver) = mpsc::channel(100000);
 
-    let (sender, mut receiver) = mpsc::channel(100);
-    let mut builder = fetcher::FetcherConfigBuilder::new()
-        .chain_id(chain_id)
-        .num_threads(num_threads)
-        .start_block_height(start_block_height);
-    if let Some(end_block_height) = end_block_height {
-        builder = builder.end_block_height(end_block_height.saturating_sub(1));
-    }
-    if let Some(auth_bearer_token) = auth_bearer_token {
-        builder = builder.auth_bearer_token(auth_bearer_token);
-    }
-    tokio::spawn(fetcher::start_fetcher(
-        builder.build(),
-        sender,
-        is_running.clone(),
-    ));
+    // Spawn fetcher task from legacy DB
+    let fetcher_is_running = is_running.clone();
+    tokio::spawn(async move {
+        fetch_transfer_rows_from_legacy_db(
+            &legacy_db,
+            start_block_height,
+            end_block_height,
+            sender,
+            fetcher_is_running,
+        )
+        .await
+        .unwrap();
+    });
 
-    let mut block_times = std::collections::VecDeque::with_capacity(1000);
-
-    while let Some(block) = receiver.recv().await {
+    while let Some(row) = receiver.recv().await {
         if is_running.load(Ordering::SeqCst) {
-            let block_height = block.block.header.height;
-            let block_timestamp = block.block.header.timestamp;
-            let current_time_ns = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
-
-            block_times.push_back(std::time::Instant::now());
-            if block_times.len() > 1000 {
-                block_times.pop_front();
-            }
-
-            if let Some(end_block) = end_block_height {
-                let blocks_processed = block_times.len();
-                let elapsed = if blocks_processed > 1 {
-                    block_times
-                        .back()
-                        .unwrap()
-                        .duration_since(*block_times.front().unwrap())
-                        .as_secs_f64()
-                } else {
-                    0.0
-                };
-
-                let blocks_per_second = if elapsed > 0.0 {
-                    (blocks_processed - 1) as f64 / elapsed
-                } else {
-                    0.0
-                };
-
-                let remaining_blocks = end_block.saturating_sub(block_height);
-                let eta_seconds = if blocks_per_second > 0.0 {
-                    remaining_blocks as f64 / blocks_per_second
-                } else {
-                    0.0
-                };
-
-                let eta_duration = std::time::Duration::from_secs(eta_seconds as u64);
-                let eta_string = humantime::format_duration(eta_duration).to_string();
-
-                tracing::log::info!(
-                    target: PROJECT_ID,
-                    "Processing block {}\tETA: {}\t{} blocks remaining",
-                    block_height,
-                    eta_string,
-                    remaining_blocks
-                );
-            } else {
-                tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
-            }
-            transfers_indexer.process_block(&db, block).await.unwrap()
+            transfers_indexer
+                .process_transfer_row(&new_db, row)
+                .await
+                .unwrap();
         }
     }
-    tracing::log::info!(target: PROJECT_ID, "Committing the last batch");
-    transfers_indexer.commit(&db).await.unwrap();
+
+    if !is_running.load(Ordering::SeqCst) {
+        // Truncate rows of the last block to avoid partial data
+        let last_block_height = transfers_indexer.rows.last().map(|r| r.block_height);
+        if let Some(last_block_height) = last_block_height {
+            transfers_indexer
+                .rows
+                .retain(|r| r.block_height != last_block_height);
+        }
+    }
+    transfers_indexer.commit(&new_db).await.unwrap();
     transfers_indexer.flush().await.unwrap();
 
-    if let Some(price_history) = transfers_indexer.price_history {
-        let price_history = price_history.read().unwrap();
-        if let Err(e) = price_history.save_to_file("res/price_history.json") {
-            tracing::error!(target: PROJECT_ID, "Failed to save price history: {}", e);
-        } else {
-            tracing::info!(target: PROJECT_ID, "Saved price history to res/price_history.json");
+    tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
+}
+
+pub struct TransfersIndexer {
+    pub commit_every_block: bool,
+    pub rows: Vec<AccountTransferRow>,
+    pub commit_handlers: Vec<tokio::task::JoinHandle<Result<(), clickhouse::error::Error>>>,
+    pub table: String,
+    pub last_block_height: Option<BlockHeight>,
+}
+
+impl TransfersIndexer {
+    pub fn new(table: &str) -> Self {
+        let commit_every_block = std::env::var("COMMIT_EVERY_BLOCK")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        Self {
+            commit_every_block,
+            rows: vec![],
+            commit_handlers: vec![],
+            table: table.to_string(),
+            last_block_height: None,
         }
     }
 
-    tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
+    pub async fn maybe_commit(
+        &mut self,
+        db: &ClickDB,
+        block_height: BlockHeight,
+    ) -> anyhow::Result<()> {
+        let is_round_block = block_height % SAVE_STEP == 0;
+        if is_round_block {
+            tracing::log::info!(
+                target: CLICKHOUSE_TARGET,
+                "#{}: Having {} rows",
+                block_height,
+                self.rows.len(),
+            );
+        }
+        if self.rows.len() >= db.min_batch || is_round_block || self.commit_every_block {
+            tracing::log::info!(
+                target: CLICKHOUSE_TARGET,
+                "#{}: Committing {} rows",
+                block_height,
+                self.rows.len(),
+            );
+            self.commit(db).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn commit(&mut self, db: &ClickDB) -> anyhow::Result<()> {
+        let mut rows = vec![];
+        std::mem::swap(&mut rows, &mut self.rows);
+        while self.commit_handlers.len() >= MAX_COMMIT_HANDLERS {
+            self.commit_handlers.remove(0).await??;
+        }
+        let db = db.clone();
+        let table = self.table.clone();
+        let handler = tokio::spawn(async move {
+            if !rows.is_empty() {
+                insert_rows_with_retry(&db.client, &rows, &table).await?;
+            }
+            tracing::log::info!(
+                target: CLICKHOUSE_TARGET,
+                "Committed {} rows",
+                rows.len(),
+            );
+            Ok::<(), clickhouse::error::Error>(())
+        });
+        self.commit_handlers.push(handler);
+
+        Ok(())
+    }
+
+    pub async fn process_transfer_row(
+        &mut self,
+        db: &ClickDB,
+        row: TransferRow,
+    ) -> anyhow::Result<()> {
+        let block_height = row.block_height;
+        if let Some(last_block_height) = self.last_block_height {
+            if block_height < last_block_height {
+                return Ok(());
+            }
+            if block_height > last_block_height {
+                self.maybe_commit(db, block_height).await?;
+            }
+        }
+        self.last_block_height = Some(block_height);
+
+        let mut account_row = AccountTransferRow {
+            block_height: row.block_height,
+            block_timestamp: row.block_timestamp,
+            transaction_id: row.transaction_id,
+            receipt_id: row.receipt_id,
+            action_index: row.action_index,
+            log_index: row.log_index,
+            transfer_index: row.transfer_index,
+            signer_id: row.signer_id,
+            predecessor_id: row.predecessor_id,
+            receipt_account_id: row.account_id,
+            account_id: "".to_string(),
+            other_account_id: None,
+            asset_id: row.asset_id,
+            asset_type: row.asset_type,
+            amount: row.amount.min(i128::MAX as u128) as i128,
+            method_name: row.method_name,
+            transfer_type: row.transfer_type,
+            human_amount: row.human_amount,
+            usd_amount: row.usd_amount,
+            start_of_block_balance: row.receiver_start_of_block_balance,
+            end_of_block_balance: row.receiver_end_of_block_balance,
+        };
+
+        if row.sender_id != row.receiver_id {
+            if let Some(sender_id) = &row.sender_id {
+                let mut account_row = account_row.clone();
+                account_row.amount = -account_row.amount;
+                account_row.account_id = sender_id.to_string();
+                account_row.other_account_id = row.receiver_id.as_ref().map(|id| id.to_string());
+                account_row.human_amount = row.human_amount.map(|v| -v);
+                account_row.usd_amount = row.usd_amount.map(|v| -v);
+                account_row.start_of_block_balance = row.sender_start_of_block_balance;
+                account_row.end_of_block_balance = row.sender_end_of_block_balance;
+                self.rows.push(account_row);
+            }
+        }
+        if let Some(receiver_id) = row.receiver_id {
+            account_row.account_id = receiver_id;
+            account_row.other_account_id = row.sender_id.map(|id| id.to_string());
+            self.rows.push(account_row);
+        }
+
+        Ok(())
+    }
+
+    pub async fn last_block_in_range(
+        &self,
+        db: &ClickDB,
+        start_block: BlockHeight,
+        end_block: BlockHeight,
+    ) -> BlockHeight {
+        let res = db
+            .max_in_range("block_height", &self.table, start_block, end_block)
+            .await
+            .unwrap_or(0);
+        if res == 0 {
+            start_block.saturating_sub(1)
+        } else {
+            res
+        }
+    }
+
+    pub async fn flush(&mut self) -> anyhow::Result<()> {
+        while let Some(handler) = self.commit_handlers.pop() {
+            handler.await??;
+        }
+        Ok(())
+    }
+}
+
+pub async fn fetch_transfer_rows_from_legacy_db(
+    db: &ClickDB,
+    start_block_height: BlockHeight,
+    end_block_height: Option<BlockHeight>,
+    sender: mpsc::Sender<TransferRow>,
+    is_running: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let mut current_block_height = start_block_height;
+    let batch_size = 10_000;
+    loop {
+        if !is_running.load(Ordering::SeqCst) {
+            break;
+        }
+        let to_block_height = if let Some(end_block_height) = end_block_height {
+            std::cmp::min(current_block_height + batch_size, end_block_height)
+        } else {
+            current_block_height + batch_size
+        };
+        if current_block_height > to_block_height {
+            break;
+        }
+        let res = internal_fetch_transfer_rows_from_legacy_db(
+            db,
+            current_block_height,
+            to_block_height,
+            &sender,
+            is_running.clone(),
+        )
+        .await;
+        match res {
+            Ok(_) => {
+                current_block_height = to_block_height;
+            }
+            Err(err) => {
+                tracing::log::error!(
+                    target: PROJECT_ID,
+                    "Error fetching transfer rows from legacy DB for blocks {} to {}: {}. Retrying in 5 seconds...",
+                    current_block_height,
+                    to_block_height,
+                    err
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn internal_fetch_transfer_rows_from_legacy_db(
+    db: &ClickDB,
+    current_block_height: BlockHeight,
+    to_block_height: BlockHeight,
+    sender: &mpsc::Sender<TransferRow>,
+    is_running: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    tracing::log::info!(
+        target: PROJECT_ID,
+        "Fetching transfer rows from legacy DB for blocks {} to {}",
+        current_block_height,
+        to_block_height
+    );
+    let query = format!(
+        "SELECT * FROM transfers WHERE block_height >= {} AND block_height < {} ORDER BY block_height, transfer_index",
+        current_block_height, to_block_height
+    );
+    let mut cursor = db.client.query(&query).fetch::<TransferRow>()?;
+    while let Some(row) = cursor.next().await? {
+        if !is_running.load(Ordering::SeqCst) {
+            break;
+        }
+        sender.send(row).await?;
+    }
+    Ok(())
 }
