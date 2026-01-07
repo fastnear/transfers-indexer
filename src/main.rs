@@ -321,7 +321,7 @@ pub async fn fetch_transfer_rows_from_legacy_db(
         } else {
             current_block_height + batch_size
         };
-        if current_block_height > to_block_height {
+        if current_block_height >= to_block_height {
             break;
         }
         let res = internal_fetch_transfer_rows_from_legacy_db(
