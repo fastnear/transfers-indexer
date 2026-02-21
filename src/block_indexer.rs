@@ -6,7 +6,7 @@ use crate::rpc::RpcConfig;
 use fastnear_primitives::block_with_tx_hash::BlockWithTxHashes;
 use fastnear_primitives::near_indexer_primitives::types::{AccountId, BlockHeight};
 use fastnear_primitives::near_indexer_primitives::views::{
-    ActionView, ExecutionStatusView, ReceiptEnumView,
+    ActionView, ExecutionStatusView, ReceiptEnumView, StateChangeCauseView, StateChangeValueView,
 };
 use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use hashlink::LinkedHashMap;
@@ -127,6 +127,57 @@ impl BlockIndexer {
             row.other_account_id = sender_id.map(|id| id.to_string());
             self.add_pending_row_native_near_internal(row);
         }
+    }
+
+    fn add_pending_row_epoch_reward(
+        &mut self,
+        global_transfer_index: &mut u32,
+        account_id: &AccountId,
+        new_balance: u128,
+    ) {
+        let transfer_index =
+            *global_transfer_index * TRANSFER_MULTIPLIER + TransferType::EpochRewards.transfer_index_offset();
+        *global_transfer_index += 1;
+
+        let row = TransferRow {
+            block_height: self.block_height,
+            block_timestamp: self.block_timestamp,
+            transaction_id: None,
+            receipt_id: self.block_hash.to_string(),
+            action_index: None,
+            log_index: None,
+            transfer_index,
+            signer_id: "system".to_string(),
+            predecessor_id: "system".to_string(),
+            receipt_account_id: account_id.to_string(),
+            account_id: account_id.to_string(),
+            other_account_id: None,
+            asset_id: ASSET_ID_NATIVE_NEAR.to_string(),
+            asset_type: AssetType::Near.to_string(),
+            amount: 0, // computed during task resolution
+            method_name: None,
+            transfer_type: TransferType::EpochRewards.to_string(),
+            human_amount: None,
+            usd_amount: None,
+            start_of_block_balance: None,
+            end_of_block_balance: None,
+        };
+
+        let pending_row = PendingRow {
+            task_groups: vec![TaskGroup::EpochReward {
+                new_balance,
+                start_of_block_balance: self.task(Task::AccountBalance {
+                    account_id: account_id.clone(),
+                    block_hash: self.previous_block_hash,
+                }),
+                end_of_block_balance: self.task(Task::AccountBalance {
+                    account_id: account_id.clone(),
+                    block_hash: self.block_hash,
+                }),
+            }],
+            row,
+        };
+        self.pending_rows.push(pending_row);
     }
 
     fn add_pending_row_ft_internal(&mut self, row: TransferRow, contract_id: &AccountId) {
@@ -318,6 +369,7 @@ impl BlockIndexer {
         &mut self,
         block: BlockWithTxHashes,
         transfer_types: &Option<HashSet<TransferType>>,
+        is_epoch_boundary: bool,
     ) -> anyhow::Result<()> {
         self.block_height = block.block.header.height;
         self.block_hash = block.block.header.hash;
@@ -333,6 +385,25 @@ impl BlockIndexer {
         };
 
         let mut global_transfer_index: u32 = 0;
+        let mut epoch_rewards: Vec<(AccountId, u128)> = Vec::new();
+        for shard in &block.shards {
+            if is_epoch_boundary && has_transfer_type(&TransferType::EpochRewards) {
+                for state_change in &shard.state_changes {
+                    if matches!(state_change.cause, StateChangeCauseView::ValidatorAccountsUpdate) {
+                        if let StateChangeValueView::AccountUpdate {
+                            account_id,
+                            account,
+                        } = &state_change.value
+                        {
+                            let new_balance =
+                                account.amount.as_yoctonear() + account.locked.as_yoctonear();
+                            epoch_rewards.push((account_id.clone(), new_balance));
+                        }
+                    }
+                }
+            }
+        }
+
         for shard in block.shards {
             for reo in shard.receipt_execution_outcomes {
                 let transaction_id = reo.tx_hash;
@@ -752,6 +823,14 @@ impl BlockIndexer {
             }
         }
 
+        for (account_id, new_balance) in epoch_rewards {
+            self.add_pending_row_epoch_reward(
+                &mut global_transfer_index,
+                &account_id,
+                new_balance,
+            );
+        }
+
         Ok(())
     }
 
@@ -808,6 +887,22 @@ impl BlockIndexer {
                                 let factor = price.0 as f64 / NEAR_BASE_FACTOR;
                                 lst_prices.insert(map_asset_id_to_intents(&row.asset_id), factor);
                             }
+                        }
+                        TaskGroup::EpochReward {
+                            new_balance,
+                            start_of_block_balance,
+                            end_of_block_balance,
+                        } => {
+                            let old_balance: Option<U128> =
+                                resolve_task(&task_results, Some(start_of_block_balance));
+                            let old_balance_val = old_balance.map(|v| v.0).unwrap_or(0);
+                            let reward = new_balance.saturating_sub(old_balance_val);
+                            row.amount = reward.min(i128::MAX as u128) as i128;
+                            row.human_amount = Some(row.amount as f64 / NEAR_BASE_FACTOR);
+                            row.start_of_block_balance = Some(old_balance_val);
+                            row.end_of_block_balance =
+                                resolve_task(&task_results, Some(end_of_block_balance))
+                                    .map(|v: U128| v.0);
                         }
                     }
                 }

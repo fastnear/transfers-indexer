@@ -17,6 +17,7 @@ pub enum TransferType {
     FtTransfer,
     WrappedNear,
     MtTransfer,
+    EpochRewards,
 }
 
 impl Display for TransferType {
@@ -46,6 +47,7 @@ impl TransferType {
             TransferType::NativeTransfer => TRANSFER_MULTIPLIER - 1,
             TransferType::AttachedDeposit => TRANSFER_MULTIPLIER - 2,
             TransferType::DeterministicStateInit => TRANSFER_MULTIPLIER - 3,
+            TransferType::EpochRewards => TRANSFER_MULTIPLIER - 4,
             TransferType::FtTransfer => 0,
             TransferType::WrappedNear => 0,
             TransferType::MtTransfer => 0,
@@ -162,6 +164,11 @@ pub enum TaskGroup {
     },
     LstPrice {
         lst_price: TaskIdOrValue<U128>,
+    },
+    EpochReward {
+        new_balance: u128,
+        start_of_block_balance: TaskIdOrValue<U128>,
+        end_of_block_balance: TaskIdOrValue<U128>,
     },
 }
 
