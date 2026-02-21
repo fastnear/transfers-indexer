@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use crate::block_indexer::BlockIndexer;
 use crate::rpc::RpcConfig;
 use crate::types::*;
-use fastnear_primitives::near_indexer_primitives::CryptoHash;
 use fastnear_primitives::near_primitives::types::BlockHeight;
 use reqwest::Client;
 
@@ -17,7 +16,6 @@ pub struct TransfersIndexer {
     pub rpc_config: RpcConfig,
     pub client: Client,
     pub price_history: Option<PriceHistorySingleton>,
-    pub previous_epoch_id: Option<CryptoHash>,
 }
 
 impl TransfersIndexer {
@@ -35,7 +33,6 @@ impl TransfersIndexer {
             rpc_config,
             client: Client::new(),
             price_history: None,
-            previous_epoch_id: None,
         }
     }
 
@@ -91,14 +88,9 @@ impl TransfersIndexer {
         block.shards.sort_by(|a, b| a.shard_id.cmp(&b.shard_id));
 
         let block_height = block.block.header.height;
-        let current_epoch_id = block.block.header.epoch_id;
-        let is_epoch_boundary = self
-            .previous_epoch_id
-            .map_or(false, |prev| prev != current_epoch_id);
-        self.previous_epoch_id = Some(current_epoch_id);
 
         let mut block_indexer = BlockIndexer::new(self.task_cache.take());
-        block_indexer.process_block(block, &self.transfer_types, is_epoch_boundary)?;
+        block_indexer.process_block(block, &self.transfer_types)?;
 
         // Execute tasks and fill pending rows
         let (rows, task_cache) = block_indexer

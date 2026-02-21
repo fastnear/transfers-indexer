@@ -369,7 +369,6 @@ impl BlockIndexer {
         &mut self,
         block: BlockWithTxHashes,
         transfer_types: &Option<HashSet<TransferType>>,
-        is_epoch_boundary: bool,
     ) -> anyhow::Result<()> {
         self.block_height = block.block.header.height;
         self.block_hash = block.block.header.hash;
@@ -387,7 +386,7 @@ impl BlockIndexer {
         let mut global_transfer_index: u32 = 0;
         let mut epoch_rewards: Vec<(AccountId, u128)> = Vec::new();
         for shard in &block.shards {
-            if is_epoch_boundary && has_transfer_type(&TransferType::EpochRewards) {
+            if has_transfer_type(&TransferType::EpochRewards) {
                 for state_change in &shard.state_changes {
                     if matches!(state_change.cause, StateChangeCauseView::ValidatorAccountsUpdate) {
                         if let StateChangeValueView::AccountUpdate {
