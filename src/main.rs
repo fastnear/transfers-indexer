@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::pricing::PriceHistorySingleton;
 use crate::types::TransferType;
+use clap::Parser;
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
 use fastnear_primitives::block_with_tx_hash::*;
@@ -21,11 +22,29 @@ use tokio::sync::mpsc;
 
 const PROJECT_ID: &str = "transfer-indexer";
 
+#[derive(Parser)]
+#[command(about = "NEAR Transfer Indexer")]
+struct Cli {
+    /// Comma-separated transfer types to index, or "all"
+    #[arg(short, long)]
+    transfer_types: String,
+
+    /// Start block height
+    #[arg(short, long)]
+    start_block_height: Option<BlockHeight>,
+
+    /// End block height
+    #[arg(short, long)]
+    end_block_height: Option<BlockHeight>,
+}
+
 #[tokio::main]
 async fn main() {
     #[allow(deprecated)]
     openssl_probe::init_ssl_cert_env_vars();
     dotenv().ok();
+
+    let cli = Cli::parse();
 
     let is_running = Arc::new(AtomicBool::new(true));
     let ctrl_c_running = is_running.clone();
@@ -76,13 +95,11 @@ async fn main() {
 
     tracing::log::info!(target: PROJECT_ID, "First block: {}", first_block_height);
 
-    let args: Vec<String> = std::env::args().collect();
-    let transfer_types_str = args.get(1).expect("Command is not specified");
-    let transfer_types = if transfer_types_str.to_lowercase() == "all" {
+    let transfer_types = if cli.transfer_types.to_lowercase() == "all" {
         None
     } else {
         Some(
-            transfer_types_str
+            cli.transfer_types
                 .split(',')
                 .map(|s| {
                     serde_json::from_str::<TransferType>(&format!("\"{s}\""))
@@ -93,13 +110,8 @@ async fn main() {
         )
     };
 
-    let start_block_height: Option<BlockHeight> = args
-        .get(2)
-        .map(|v| v.parse().expect("Failed to parse backfill block height"));
-
-    let end_block_height: Option<BlockHeight> = args
-        .get(3)
-        .map(|v| v.parse().expect("Failed to parse end block height"));
+    let start_block_height = cli.start_block_height;
+    let end_block_height = cli.end_block_height;
 
     let mut transfers_indexer = transfers::TransfersIndexer::new(transfer_types.as_deref());
     let db_last_block_height = transfers_indexer

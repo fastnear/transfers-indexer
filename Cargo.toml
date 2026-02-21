@@ -40,4 +40,5 @@ hashlink = "0.10.0"
 derivative = "2.2.0"
 humantime = "2.3.0"
 futures = "0.3.31"
+clap = { version = "4", features = ["derive"] }
 
