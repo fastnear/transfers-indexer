@@ -70,21 +70,17 @@ async fn main() {
     let is_running = Arc::new(AtomicBool::new(true));
     let ctrl_c_running = is_running.clone();
     tokio::spawn(async move {
-        let mut signals = signal_hook::iterator::Signals::new(&[
-            signal_hook::consts::SIGTERM,
-            signal_hook::consts::SIGINT,
-        ])
-        .unwrap();
-        for sig in signals.forever() {
-            match sig {
-                signal_hook::consts::SIGTERM | signal_hook::consts::SIGINT => {
-                    println!("Received signal {}, shutting down...", sig);
-                    ctrl_c_running.store(false, Ordering::SeqCst);
-                    break;
-                }
-                _ => unreachable!(),
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        tokio::select! {
+            _ = sigterm.recv() => {
+                println!("Received SIGTERM, shutting down...");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("Received SIGINT, shutting down...");
             }
         }
+        ctrl_c_running.store(false, Ordering::SeqCst);
     });
 
     common::setup_tracing(
@@ -92,6 +88,8 @@ async fn main() {
     );
 
     tracing::log::info!(target: PROJECT_ID, "Starting Transfer Indexer");
+
+    let mut exit_with_error = false;
 
     let db = ClickDB::new(10000);
     db.verify_connection()
@@ -145,10 +143,16 @@ async fn main() {
 
             match block {
                 Some(block) => {
-                    transfers_indexer
-                        .process_block(&db, block)
-                        .await
-                        .unwrap();
+                    if let Err(e) = transfers_indexer.process_block(&db, block).await {
+                        tracing::error!(
+                            target: PROJECT_ID,
+                            "Failed to process block {}: {:?}",
+                            height,
+                            e
+                        );
+                        exit_with_error = true;
+                        break;
+                    }
                 }
                 None => {
                     tracing::log::warn!(
@@ -277,7 +281,17 @@ async fn main() {
                 } else {
                     tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
                 }
-                transfers_indexer.process_block(&db, block).await.unwrap()
+                if let Err(e) = transfers_indexer.process_block(&db, block).await {
+                    tracing::error!(
+                        target: PROJECT_ID,
+                        "Failed to process block {}: {:?}",
+                        block_height,
+                        e
+                    );
+                    exit_with_error = true;
+                    is_running.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
         }
     }
@@ -293,6 +307,11 @@ async fn main() {
         } else {
             tracing::info!(target: PROJECT_ID, "Saved price history to res/price_history.json");
         }
+    }
+
+    if exit_with_error {
+        tracing::error!(target: PROJECT_ID, "Exiting with error");
+        std::process::exit(1);
     }
 
     tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");
