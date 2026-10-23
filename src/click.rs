@@ -1,7 +1,5 @@
-use clickhouse::{Client, Row};
+use clickhouse::{Client, RowOwned, RowWrite};
 use std::env;
-
-use serde::Serialize;
 
 use fastnear_primitives::near_primitives::types::BlockHeight;
 use std::time::Duration;
@@ -53,6 +51,7 @@ fn establish_connection() -> Client {
         .with_user(env::var("DATABASE_USER").unwrap())
         .with_password(env::var("DATABASE_PASSWORD").unwrap())
         .with_database(env::var("DATABASE_DATABASE").unwrap())
+        .with_validation(false)
 }
 
 pub async fn insert_rows_with_retry<T>(
@@ -61,7 +60,7 @@ pub async fn insert_rows_with_retry<T>(
     table: &str,
 ) -> clickhouse::error::Result<()>
 where
-    T: Row + Serialize,
+    T: RowOwned + RowWrite,
 {
     let mut delay = Duration::from_millis(100);
     let max_retries = 10;
@@ -69,7 +68,7 @@ where
     loop {
         let res = || async {
             if env::var("CLICKHOUSE_SKIP_COMMIT") != Ok("true".to_string()) {
-                let mut insert = client.insert(table)?;
+                let mut insert = client.insert::<T>(table).await?;
                 for row in rows {
                     insert.write(row).await?;
                 }
