@@ -17,6 +17,7 @@ pub enum TransferType {
     FtTransfer,
     WrappedNear,
     MtTransfer,
+    EpochRewards,
 }
 
 impl Display for TransferType {
@@ -46,12 +47,37 @@ impl TransferType {
             TransferType::NativeTransfer => TRANSFER_MULTIPLIER - 1,
             TransferType::AttachedDeposit => TRANSFER_MULTIPLIER - 2,
             TransferType::DeterministicStateInit => TRANSFER_MULTIPLIER - 3,
+            TransferType::EpochRewards => TRANSFER_MULTIPLIER - 4,
             TransferType::FtTransfer => 0,
             TransferType::WrappedNear => 0,
             TransferType::MtTransfer => 0,
         }
     }
 }
+
+/*
+   block_height           UInt64 COMMENT 'Block height',
+   block_timestamp        DateTime64(9, 'UTC') COMMENT 'Block timestamp in nanoseconds using UTC',
+   transaction_id         Nullable(String) COMMENT 'Transaction hash. Sometimes our indexer is missing the transaction hash.',
+   receipt_id             String COMMENT 'Receipt hash',
+   action_index           Nullable(UInt16) COMMENT 'Index of the actions within the receipt. Empty for event based (where action index is unknown)',
+   log_index              Nullable(UInt16) COMMENT 'Index of the log within the receipt. Empty for action based transfers.',
+   transfer_index         UInt32 COMMENT 'The unique index of the transfer within the block',
+   signer_id              String COMMENT 'The account ID of the transaction signer',
+   predecessor_id         String COMMENT 'The account ID of the receipt predecessor',
+   receipt_account_id     String COMMENT 'The account ID of where the receipt is executed',
+   account_id             String COMMENT 'The account ID involved in a transfer (either sender or receiver)',
+   other_account_id       Nullable(String) COMMENT 'The account ID on the other side of the transfer, or empty for mints or burns',
+   asset_id               String COMMENT 'The asset ID (e.g., "near" for NEAR transfers, or the token contract account ID for fungible token transfers)',
+   asset_type             LowCardinality(String) COMMENT 'The asset type: "Near" for native token transfers, "Ft" for fungible token transfers',
+   amount                 Int128 COMMENT 'The amount transferred in token units (e.g. yoctoNEAR). Positive for incoming transfers, negative for outgoing transfers. The value will be capped to Int128 range.',
+   method_name            Nullable(String) COMMENT 'The method name that triggered the transfer (e.g., "ft_transfer", "ft_transfer_call", etc.)',
+   transfer_type          LowCardinality(String) COMMENT 'The type of transfer: NEAR native token or Fungible Token (FT)',
+   human_amount           Nullable(Float64) COMMENT 'The amount transferred after applying the token decimals, if available',
+   usd_amount             Nullable(Float64) COMMENT 'The USD value of the transfer at the time of the block, if available',
+   start_of_block_balance Nullable(UInt128) COMMENT 'The sender account balance at the start of the block in token units',
+   end_of_block_balance   Nullable(UInt128) COMMENT 'The sender account balance at the end of the block in token units',
+*/
 
 #[derive(Debug, Clone, Row, Serialize)]
 pub struct TransferRow {
@@ -64,20 +90,18 @@ pub struct TransferRow {
     pub transfer_index: u32,
     pub signer_id: String,
     pub predecessor_id: String,
+    pub receipt_account_id: String,
     pub account_id: String,
-    pub sender_id: Option<String>,
-    pub receiver_id: Option<String>,
+    pub other_account_id: Option<String>,
     pub asset_id: String,
     pub asset_type: String,
-    pub amount: u128,
+    pub amount: i128,
     pub method_name: Option<String>,
     pub transfer_type: String,
     pub human_amount: Option<f64>,
     pub usd_amount: Option<f64>,
-    pub sender_start_of_block_balance: Option<u128>,
-    pub sender_end_of_block_balance: Option<u128>,
-    pub receiver_start_of_block_balance: Option<u128>,
-    pub receiver_end_of_block_balance: Option<u128>,
+    pub start_of_block_balance: Option<u128>,
+    pub end_of_block_balance: Option<u128>,
 }
 
 #[derive(Derivative)]
@@ -132,16 +156,19 @@ pub enum TaskIdOrValue<V> {
 
 pub enum TaskGroup {
     BlockBalances {
-        sender_start_of_block_balance: Option<TaskIdOrValue<U128>>,
-        sender_end_of_block_balance: Option<TaskIdOrValue<U128>>,
-        receiver_start_of_block_balance: Option<TaskIdOrValue<U128>>,
-        receiver_end_of_block_balance: Option<TaskIdOrValue<U128>>,
+        start_of_block_balance: TaskIdOrValue<U128>,
+        end_of_block_balance: TaskIdOrValue<U128>,
     },
     Decimals {
         decimals: TaskIdOrValue<u8>,
     },
     LstPrice {
         lst_price: TaskIdOrValue<U128>,
+    },
+    EpochReward {
+        new_balance: u128,
+        start_of_block_balance: TaskIdOrValue<U128>,
+        end_of_block_balance: TaskIdOrValue<U128>,
     },
 }
 

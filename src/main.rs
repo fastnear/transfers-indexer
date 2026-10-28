@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use crate::pricing::PriceHistorySingleton;
 use crate::types::TransferType;
+use clap::Parser;
 use dotenv::dotenv;
 use fastnear_neardata_fetcher::fetcher;
+use fastnear_neardata_fetcher::utils;
 use fastnear_primitives::block_with_tx_hash::*;
 use fastnear_primitives::near_indexer_primitives::types::BlockHeight;
 use fastnear_primitives::types::ChainId;
@@ -21,30 +23,64 @@ use tokio::sync::mpsc;
 
 const PROJECT_ID: &str = "transfer-indexer";
 
+#[derive(Parser)]
+#[command(about = "NEAR Transfer Indexer")]
+struct Cli {
+    /// Comma-separated transfer types to index, or "all"
+    #[arg(short, long)]
+    transfer_types: String,
+
+    /// Start block height (streaming/range mode)
+    #[arg(short, long)]
+    start_block_height: Option<BlockHeight>,
+
+    /// End block height (streaming/range mode)
+    #[arg(short, long)]
+    end_block_height: Option<BlockHeight>,
+
+    /// Comma-separated list of block heights to backfill
+    #[arg(short, long, conflicts_with_all = ["start_block_height", "end_block_height"])]
+    block_heights: Option<String>,
+}
+
+fn parse_transfer_types(s: &str) -> Option<Vec<TransferType>> {
+    if s.to_lowercase() == "all" {
+        None
+    } else {
+        Some(
+            s.split(',')
+                .map(|s| {
+                    serde_json::from_str::<TransferType>(&format!("\"{s}\""))
+                        .map_err(|err| format!("Invalid transfer type `{s}`: {:?}", err))
+                        .unwrap()
+                })
+                .collect(),
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() {
     #[allow(deprecated)]
     openssl_probe::init_ssl_cert_env_vars();
     dotenv().ok();
 
+    let cli = Cli::parse();
+
     let is_running = Arc::new(AtomicBool::new(true));
     let ctrl_c_running = is_running.clone();
     tokio::spawn(async move {
-        let mut signals = signal_hook::iterator::Signals::new(&[
-            signal_hook::consts::SIGTERM,
-            signal_hook::consts::SIGINT,
-        ])
-        .unwrap();
-        for sig in signals.forever() {
-            match sig {
-                signal_hook::consts::SIGTERM | signal_hook::consts::SIGINT => {
-                    println!("Received signal {}, shutting down...", sig);
-                    ctrl_c_running.store(false, Ordering::SeqCst);
-                    break;
-                }
-                _ => unreachable!(),
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        tokio::select! {
+            _ = sigterm.recv() => {
+                println!("Received SIGTERM, shutting down...");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("Received SIGINT, shutting down...");
             }
         }
+        ctrl_c_running.store(false, Ordering::SeqCst);
     });
 
     common::setup_tracing(
@@ -52,6 +88,8 @@ async fn main() {
     );
 
     tracing::log::info!(target: PROJECT_ID, "Starting Transfer Indexer");
+
+    let mut exit_with_error = false;
 
     let db = ClickDB::new(10000);
     db.verify_connection()
@@ -61,148 +99,203 @@ async fn main() {
     let client = reqwest::Client::new();
     let chain_id = ChainId::try_from(std::env::var("CHAIN_ID").expect("CHAIN_ID is not set"))
         .expect("Invalid chain id");
-    let num_threads = std::env::var("NUM_FETCHING_THREADS")
-        .expect("NUM_FETCHING_THREADS is not set")
-        .parse::<u64>()
-        .expect("Invalid NUM_FETCHING_THREADS");
-    let auth_bearer_token = std::env::var("AUTH_BEARER_TOKEN").ok();
 
-    let first_block_height = fetcher::fetch_first_block(&client, chain_id)
-        .await
-        .expect("First block doesn't exists")
-        .block
-        .header
-        .height;
-
-    tracing::log::info!(target: PROJECT_ID, "First block: {}", first_block_height);
-
-    let args: Vec<String> = std::env::args().collect();
-    let transfer_types_str = args.get(1).expect("Command is not specified");
-    let transfer_types = if transfer_types_str.to_lowercase() == "all" {
-        None
-    } else {
-        Some(
-            transfer_types_str
-                .split(',')
-                .map(|s| {
-                    serde_json::from_str::<TransferType>(&format!("\"{s}\""))
-                        .map_err(|err| format!("Invalid transfer type `{s}`: {:?}", err))
-                        .unwrap()
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    let start_block_height: Option<BlockHeight> = args
-        .get(2)
-        .map(|v| v.parse().expect("Failed to parse backfill block height"));
-
-    let end_block_height: Option<BlockHeight> = args
-        .get(3)
-        .map(|v| v.parse().expect("Failed to parse end block height"));
-
+    let transfer_types = parse_transfer_types(&cli.transfer_types);
     let mut transfers_indexer = transfers::TransfersIndexer::new(transfer_types.as_deref());
-    let db_last_block_height = transfers_indexer
-        .last_block_in_range(
-            &db,
-            start_block_height.unwrap_or(0),
-            end_block_height.unwrap_or(10u64.pow(15)),
-        )
-        .await;
-    tracing::log::info!(target: PROJECT_ID, "Last block height in range: {}", db_last_block_height);
-    let start_block_height = (db_last_block_height + 1).max(first_block_height);
 
-    if let Some(end_block_height) = end_block_height {
-        if start_block_height >= end_block_height {
-            tracing::log::info!(target: PROJECT_ID, "Nothing to do. The range is full.");
-            return;
+    if let Some(block_heights_str) = cli.block_heights {
+        // Backfill mode: process specific block heights
+        let block_heights: Vec<BlockHeight> = block_heights_str
+            .split(',')
+            .map(|s| {
+                s.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("Invalid block height: {s}"))
+            })
+            .collect();
+
+        tracing::log::info!(
+            target: PROJECT_ID,
+            "Backfill mode: processing {} block(s)",
+            block_heights.len()
+        );
+
+        for (i, height) in block_heights.iter().enumerate() {
+            if !is_running.load(Ordering::SeqCst) {
+                break;
+            }
+
+            tracing::log::info!(
+                target: PROJECT_ID,
+                "Backfilling block {} ({}/{})",
+                height,
+                i + 1,
+                block_heights.len()
+            );
+
+            let block = utils::fetch_block_by_height(
+                &client,
+                *height,
+                utils::DEFAULT_TIMEOUT,
+                chain_id,
+            )
+            .await;
+
+            match block {
+                Some(block) => {
+                    if let Err(e) = transfers_indexer.process_block(&db, block).await {
+                        tracing::error!(
+                            target: PROJECT_ID,
+                            "Failed to process block {}: {:?}",
+                            height,
+                            e
+                        );
+                        exit_with_error = true;
+                        break;
+                    }
+                }
+                None => {
+                    tracing::log::warn!(
+                        target: PROJECT_ID,
+                        "Block {} not found, skipping",
+                        height
+                    );
+                }
+            }
         }
-    }
+    } else {
+        // Streaming/range mode
+        let num_threads = std::env::var("NUM_FETCHING_THREADS")
+            .expect("NUM_FETCHING_THREADS is not set")
+            .parse::<u64>()
+            .expect("Invalid NUM_FETCHING_THREADS");
+        let auth_bearer_token = std::env::var("AUTH_BEARER_TOKEN").ok();
 
-    // Starting intents pricing thread
-    if end_block_height.is_none() {
-        transfers_indexer.price_history = Some(pricing::start_fetcher(
+        let first_block_height = fetcher::fetch_first_block(&client, chain_id)
+            .await
+            .expect("First block doesn't exists")
+            .block
+            .header
+            .height;
+
+        tracing::log::info!(target: PROJECT_ID, "First block: {}", first_block_height);
+
+        let start_block_height = cli.start_block_height;
+        let end_block_height = cli.end_block_height;
+
+        let db_last_block_height = transfers_indexer
+            .last_block_in_range(
+                &db,
+                start_block_height.unwrap_or(0),
+                end_block_height.unwrap_or(10u64.pow(15)),
+            )
+            .await;
+        tracing::log::info!(target: PROJECT_ID, "Last block height in range: {}", db_last_block_height);
+        let start_block_height = (db_last_block_height + 1).max(first_block_height);
+
+        if let Some(end_block_height) = end_block_height {
+            if start_block_height >= end_block_height {
+                tracing::log::info!(target: PROJECT_ID, "Nothing to do. The range is full.");
+                return;
+            }
+        }
+
+        // Starting intents pricing thread
+        if end_block_height.is_none() {
+            transfers_indexer.price_history = Some(pricing::start_fetcher(
+                is_running.clone(),
+                client.clone(),
+                transfers_indexer.rpc_config.clone(),
+            ));
+        }
+
+        let (sender, mut receiver) = mpsc::channel(100);
+        let mut builder = fetcher::FetcherConfigBuilder::new()
+            .chain_id(chain_id)
+            .num_threads(num_threads)
+            .start_block_height(start_block_height);
+        if let Some(end_block_height) = end_block_height {
+            builder = builder.end_block_height(end_block_height.saturating_sub(1));
+        }
+        if let Some(auth_bearer_token) = auth_bearer_token {
+            builder = builder.auth_bearer_token(auth_bearer_token);
+        }
+        tokio::spawn(fetcher::start_fetcher(
+            builder.build(),
+            sender,
             is_running.clone(),
-            client.clone(),
-            transfers_indexer.rpc_config.clone(),
         ));
-    }
 
-    let (sender, mut receiver) = mpsc::channel(100);
-    let mut builder = fetcher::FetcherConfigBuilder::new()
-        .chain_id(chain_id)
-        .num_threads(num_threads)
-        .start_block_height(start_block_height);
-    if let Some(end_block_height) = end_block_height {
-        builder = builder.end_block_height(end_block_height.saturating_sub(1));
-    }
-    if let Some(auth_bearer_token) = auth_bearer_token {
-        builder = builder.auth_bearer_token(auth_bearer_token);
-    }
-    tokio::spawn(fetcher::start_fetcher(
-        builder.build(),
-        sender,
-        is_running.clone(),
-    ));
+        let mut block_times = std::collections::VecDeque::with_capacity(1000);
 
-    let mut block_times = std::collections::VecDeque::with_capacity(1000);
+        while let Some(block) = receiver.recv().await {
+            if is_running.load(Ordering::SeqCst) {
+                let block_height = block.block.header.height;
+                let block_timestamp = block.block.header.timestamp;
+                let current_time_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64;
+                let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
 
-    while let Some(block) = receiver.recv().await {
-        if is_running.load(Ordering::SeqCst) {
-            let block_height = block.block.header.height;
-            let block_timestamp = block.block.header.timestamp;
-            let current_time_ns = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            let time_diff_ns = current_time_ns.saturating_sub(block_timestamp);
+                block_times.push_back(std::time::Instant::now());
+                if block_times.len() > 1000 {
+                    block_times.pop_front();
+                }
 
-            block_times.push_back(std::time::Instant::now());
-            if block_times.len() > 1000 {
-                block_times.pop_front();
+                if let Some(end_block) = end_block_height {
+                    let blocks_processed = block_times.len();
+                    let elapsed = if blocks_processed > 1 {
+                        block_times
+                            .back()
+                            .unwrap()
+                            .duration_since(*block_times.front().unwrap())
+                            .as_secs_f64()
+                    } else {
+                        0.0
+                    };
+
+                    let blocks_per_second = if elapsed > 0.0 {
+                        (blocks_processed - 1) as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+
+                    let remaining_blocks = end_block.saturating_sub(block_height);
+                    let eta_seconds = if blocks_per_second > 0.0 {
+                        remaining_blocks as f64 / blocks_per_second
+                    } else {
+                        0.0
+                    };
+
+                    let eta_duration = std::time::Duration::from_secs(eta_seconds as u64);
+                    let eta_string = humantime::format_duration(eta_duration).to_string();
+
+                    tracing::log::info!(
+                        target: PROJECT_ID,
+                        "Processing block {}\tETA: {}\t{} blocks remaining",
+                        block_height,
+                        eta_string,
+                        remaining_blocks
+                    );
+                } else {
+                    tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
+                }
+                if let Err(e) = transfers_indexer.process_block(&db, block).await {
+                    tracing::error!(
+                        target: PROJECT_ID,
+                        "Failed to process block {}: {:?}",
+                        block_height,
+                        e
+                    );
+                    exit_with_error = true;
+                    is_running.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
-
-            if let Some(end_block) = end_block_height {
-                let blocks_processed = block_times.len();
-                let elapsed = if blocks_processed > 1 {
-                    block_times
-                        .back()
-                        .unwrap()
-                        .duration_since(*block_times.front().unwrap())
-                        .as_secs_f64()
-                } else {
-                    0.0
-                };
-
-                let blocks_per_second = if elapsed > 0.0 {
-                    (blocks_processed - 1) as f64 / elapsed
-                } else {
-                    0.0
-                };
-
-                let remaining_blocks = end_block.saturating_sub(block_height);
-                let eta_seconds = if blocks_per_second > 0.0 {
-                    remaining_blocks as f64 / blocks_per_second
-                } else {
-                    0.0
-                };
-
-                let eta_duration = std::time::Duration::from_secs(eta_seconds as u64);
-                let eta_string = humantime::format_duration(eta_duration).to_string();
-
-                tracing::log::info!(
-                    target: PROJECT_ID,
-                    "Processing block {}\tETA: {}\t{} blocks remaining",
-                    block_height,
-                    eta_string,
-                    remaining_blocks
-                );
-            } else {
-                tracing::log::info!(target: PROJECT_ID, "Processing block {}\tlatency {:.3} sec", block_height, time_diff_ns as f64 / 1e9f64);
-            }
-            transfers_indexer.process_block(&db, block).await.unwrap()
         }
     }
+
     tracing::log::info!(target: PROJECT_ID, "Committing the last batch");
     transfers_indexer.commit(&db).await.unwrap();
     transfers_indexer.flush().await.unwrap();
@@ -214,6 +307,11 @@ async fn main() {
         } else {
             tracing::info!(target: PROJECT_ID, "Saved price history to res/price_history.json");
         }
+    }
+
+    if exit_with_error {
+        tracing::error!(target: PROJECT_ID, "Exiting with error");
+        std::process::exit(1);
     }
 
     tracing::log::info!(target: PROJECT_ID, "Gracefully shut down");

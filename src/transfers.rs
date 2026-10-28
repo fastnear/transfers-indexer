@@ -66,7 +66,7 @@ impl TransfersIndexer {
         let db = db.clone();
         let handler = tokio::spawn(async move {
             if !rows.is_empty() {
-                insert_rows_with_retry(&db.client, &rows, "transfers").await?;
+                insert_rows_with_retry(&db.client, &rows, "account_transfers").await?;
             }
             tracing::log::info!(
                 target: CLICKHOUSE_TARGET,
@@ -115,7 +115,7 @@ impl TransfersIndexer {
         end_block: BlockHeight,
     ) -> BlockHeight {
         let res = db
-            .max_in_range("block_height", "transfers", start_block, end_block)
+            .max_in_range("block_height", "account_transfers", start_block, end_block)
             .await
             .unwrap_or(0);
         if res == 0 {
