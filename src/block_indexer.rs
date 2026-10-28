@@ -121,6 +121,10 @@ impl BlockIndexer {
                 row.other_account_id = receiver_id.map(|id| id.to_string());
                 self.add_pending_row_native_near_internal(row);
             }
+        } else {
+            // Self-transfer: both sides would share the same table key, so emit a single
+            // zero-amount row.
+            row.amount = 0;
         }
         if let Some(receiver_id) = receiver_id {
             row.account_id = receiver_id.to_string();
@@ -235,6 +239,8 @@ impl BlockIndexer {
                 row.other_account_id = ft_transfer.receiver_id.as_ref().map(|id| id.to_string());
                 self.add_pending_row_ft_internal(row, &ft_transfer.contract_id);
             }
+        } else {
+            row.amount = 0;
         }
         if let Some(receiver_id) = ft_transfer.receiver_id {
             row.account_id = receiver_id.to_string();
@@ -357,6 +363,8 @@ impl BlockIndexer {
                 row.other_account_id = mt_transfer.receiver_id.as_ref().map(|id| id.to_string());
                 self.add_pending_row_mt_internal(row, &mt_transfer);
             }
+        } else {
+            row.amount = 0;
         }
         if let Some(receiver_id) = &mt_transfer.receiver_id {
             row.account_id = receiver_id.to_string();
@@ -860,7 +868,7 @@ impl BlockIndexer {
         let mut rows: Vec<TransferRow> = self
             .pending_rows
             .into_iter()
-            .map(|pending_row| {
+            .map(|pending_row| -> anyhow::Result<TransferRow> {
                 let mut row = pending_row.row;
                 for task_group in pending_row.task_groups {
                     match task_group {
@@ -892,22 +900,30 @@ impl BlockIndexer {
                             start_of_block_balance,
                             end_of_block_balance,
                         } => {
-                            let old_balance: Option<U128> =
-                                resolve_task(&task_results, Some(start_of_block_balance));
-                            let old_balance_val = old_balance.map(|v| v.0).unwrap_or(0);
-                            let reward = new_balance.saturating_sub(old_balance_val);
+                            // Validator accounts always exist at the previous block, so a missing
+                            // balance means the lookup failed, not that the balance was zero.
+                            let old_balance: U128 =
+                                resolve_task(&task_results, Some(start_of_block_balance))
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Failed to resolve previous balance of {} for epoch reward at block {}",
+                                            row.account_id,
+                                            row.block_height
+                                        )
+                                    })?;
+                            let reward = new_balance.saturating_sub(old_balance.0);
                             row.amount = reward.min(i128::MAX as u128) as i128;
                             row.human_amount = Some(row.amount as f64 / NEAR_BASE_FACTOR);
-                            row.start_of_block_balance = Some(old_balance_val);
+                            row.start_of_block_balance = Some(old_balance.0);
                             row.end_of_block_balance =
                                 resolve_task(&task_results, Some(end_of_block_balance))
                                     .map(|v: U128| v.0);
                         }
                     }
                 }
-                row
+                Ok(row)
             })
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
 
         if let Some(price_history) = price_history.as_ref() {
             let mut prices = price_history.read().unwrap().get(self.block_timestamp);
